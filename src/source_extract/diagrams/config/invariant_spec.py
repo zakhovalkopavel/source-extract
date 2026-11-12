@@ -39,7 +39,10 @@ class InvariantSpec:
         seed = data["seedPixel"]
         second = data.get("secondSeedPixel")
         box = data.get("labelBox")
-        external = data.get("externalIds", data.get("external_ids", []))
+        external = data.get(
+            "externalIds",
+            data.get("external_ids", data.get("nbs", [])),
+        )
         return cls(
             id=data["id"],
             type=data["type"],
