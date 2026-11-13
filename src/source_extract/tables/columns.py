@@ -6,7 +6,8 @@ from typing import Any
 
 _VALUE_KEY = re.compile(r"[^A-Za-z0-9]+")
 
-# ``prop @ condition [unit]`` — density @ 25 C, Q @ 10 ppmv, Hf @ 298 K, S @ X=0, …
+# ``prop @ condition [, unit]`` — density @ 25 C, Q @ 10 ppmv, Hf @ 298 K,
+# ``S @ 298 K, joule/(mol K)``, S @ X=0, …
 _AT_PHRASE = re.compile(
     r"(?P<prop>[A-Za-z][A-Za-z0-9_]*)\s*@\s*"
     r"(?P<cond>"
@@ -21,9 +22,23 @@ _AT_PHRASE = re.compile(
     r"|T(?:MIN|MAX|[Bb])?"
     r"|T"
     r")"
-    # Trailing unit words only (not bare C/K — those start the next column).
-    r"(?:\s*(?P<tail>ppmv|ppm(?:\s*\((?:wt|mol)\))?|"
-    r"atm/mol(?:\s*frac|/m3|/frac)?|joule/\(mol\s*K\)))?",
+    # Optional printed unit after a comma, or a bare unit/token tail.
+    r"(?:"
+    r"\s*,\s*(?P<comma_unit>"
+    r"joule/\(mol\s*K\)|"
+    r"kjoule/mol|"
+    r"kjoule/kg|"
+    r"ppm\s*\((?:wt|mol)\)|"
+    r"atm/mol(?:\s*frac|/m3|/frac)?"
+    r")"
+    r"|"
+    r"\s+(?P<tail>"
+    r"ppmv|"
+    r"ppm(?:\s*\((?:wt|mol)\))?|"
+    r"atm/mol(?:\s*frac|/m3|/frac)?|"
+    r"joule/\(mol\s*K\)"
+    r")"
+    r")?",
     re.IGNORECASE,
 )
 # Printed unit under a temperature column: ``T, K`` / ``T, C``.
@@ -33,8 +48,12 @@ _EQ_UNIT_PAIR = re.compile(
     r"([A-Za-z][A-Za-z0-9_]*)\s*-\s*([^,;]+)",
 )
 _TEMP_KEYS = frozenset(
-    {"T", "Tc", "TB", "Tb", "TMIN", "TMAX", "Tmelt", "Tboil"}
+    {"T", "Tc", "TB", "Tb", "Tmin", "Tmax", "TMIN", "TMAX", "Tmelt", "Tboil"}
 )
+_KEY_ALIASES = {
+    "TMIN": "Tmin",
+    "TMAX": "Tmax",
+}
 _UNIT_ONLY = frozenset(
     {
         "k",
@@ -61,7 +80,17 @@ def _clean_header_latex(header_line: str) -> str:
     text = re.sub(r"\\circ", "", text)
     text = re.sub(r"\\text\{?\s*C\}?", "C", text)
     text = re.sub(r"\\text\{([^}]*)\}", r"\1", text)
+    # Keep subscripts glued: ``B_{liq}`` → ``B_liq`` (not ``B_ liq``).
+    text = re.sub(r"_\{([^}]+)\}", r"_\1", text)
     text = text.replace("{", " ").replace("}", " ")
+    # Yaws OCR often misreads ``liq`` as ``llq`` / ``IIq``.
+    text = re.sub(r"\bB_?(?:llq|IIq|liq)\b", "B_liq", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\bdensity_?(?:llq|IIq|liq)\b",
+        "density_liq",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"@\s*", "@ ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
@@ -88,13 +117,15 @@ def coalesce_header_labels(header_line: str | None) -> list[tuple[str, str | Non
 
     text = _T_COMMA_UNIT.sub(_store_t, text)
 
-    placeholders: list[str] = []
+    # Each entry: (header label, unit hint).
+    placeholders: list[tuple[str, str | None]] = []
 
     def _store_at(match: re.Match[str]) -> str:
         prop = match.group("prop")
         cond = re.sub(r"\s+", " ", match.group("cond").strip())
-        tail = match.groupdict().get("tail") or ""
-        tail = re.sub(r"\s+", " ", tail.strip())
+        groups = match.groupdict()
+        comma_unit = re.sub(r"\s+", " ", (groups.get("comma_unit") or "").strip())
+        tail = re.sub(r"\s+", " ", (groups.get("tail") or "").strip())
         if re.fullmatch(r"25", cond, re.IGNORECASE):
             cond = "25 C"
         elif re.fullmatch(r"25\s*C", cond, re.IGNORECASE):
@@ -110,9 +141,15 @@ def coalesce_header_labels(header_line: str | None) -> list[tuple[str, str | Non
         elif re.fullmatch(r"20", cond, re.IGNORECASE):
             cond = "20 C"
         label = f"{prop} @ {cond}"
-        if tail and tail.lower() not in cond.lower():
+        unit_hint: str | None = None
+        if comma_unit:
+            label = f"{label}, {comma_unit}"
+            unit_hint = comma_unit
+        elif tail and tail.lower() not in cond.lower():
             label = f"{label} {tail}"
-        placeholders.append(label)
+            if "/" in tail or tail.lower() in {"ppmv", "ppm"}:
+                unit_hint = tail
+        placeholders.append((label, unit_hint))
         return f" __AT{len(placeholders) - 1}__ "
 
     text = _AT_PHRASE.sub(_store_at, text)
@@ -121,7 +158,7 @@ def coalesce_header_labels(header_line: str | None) -> list[tuple[str, str | Non
         m_at = re.fullmatch(r"__AT(\d+)__", tok)
         m_t = re.fullmatch(r"__TUNIT(\d+)__", tok)
         if m_at:
-            tokens.append((placeholders[int(m_at.group(1))], None))
+            tokens.append(placeholders[int(m_at.group(1))])
         elif m_t:
             tokens.append(("T", t_unit_hints[int(m_t.group(1))]))
         else:
@@ -170,12 +207,33 @@ def columns_from_header(header_line: str | None) -> list[dict[str, str | None]]:
 
 
 def _value_column_key(label: str) -> str:
-    """``g/mol`` → ``g_mol``; ``density @ 25 C`` → ``density_at_25_C``."""
+    """``g/mol`` → ``g_mol``; ``density @ 25 C`` → ``density_at_25_C``.
+
+    Trailing ``, <unit>`` on ``prop @ condition`` headers is dropped so
+    ``S @ 298 K, joule/(mol K)`` keys as ``S_at_298_K`` (unit stays on the
+    column ``unit`` field).
+    """
     text = label.strip()
+    text = re.sub(
+        r",\s*(?:"
+        r"joule/\(mol\s*K\)|"
+        r"kjoule/mol|"
+        r"kjoule/kg|"
+        r"ppm\s*\((?:wt|mol)\)|"
+        r"atm/mol(?:\s*frac|/m3|/frac)?"
+        r")\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"\s*@\s*", "_at_", text)
     key = _VALUE_KEY.sub("_", text).strip("_")
     if not key:
         return "value"
+    # TMIN/TMAX → Tmin/Tmax (also spot suffixes like Cp_at_TMIN).
+    key = re.sub(r"(?i)(?<![A-Za-z])TMIN(?![A-Za-z])", "Tmin", key)
+    key = re.sub(r"(?i)(?<![A-Za-z])TMAX(?![A-Za-z])", "Tmax", key)
+    key = _KEY_ALIASES.get(key, key)
     if key.isupper() and len(key) <= 8:
         return key
     if re.fullmatch(r"[A-Za-z]\d*", key):

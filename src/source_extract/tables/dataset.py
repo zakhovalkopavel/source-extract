@@ -103,7 +103,9 @@ def to_debug_table(
             "first": printed.get("first"),
             "last": printed.get("last"),
         }
-    rows = [expand_row(r, columns, keep_debug=True) for r in parsed.get("rows") or []]
+    # Rows match the public dataset shape (no per-row ``raw`` / page fields).
+    # OCR provenance stays on the document: engine/headerRaw/sourcePages/unparsed.
+    rows = [expand_row(r, columns, keep_debug=False) for r in parsed.get("rows") or []]
     ref = parsed.get("refKey") or default_ref_key
     return {
         "id": parsed["id"],
