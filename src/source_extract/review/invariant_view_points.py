@@ -8,10 +8,11 @@ from source_extract.review.invariant_compound_lookup import enrich_invariant_fro
 
 
 def _node_label_by_invariant(session: dict[str, Any]) -> dict[str, str]:
-    """Map draft invariant id → atlas node label (I1, I2, …)."""
+    """Map draft invariant id → atlas node label (I# or C# rings)."""
     out: dict[str, str] = {}
     for node in session.get("nodes") or []:
-        if (node.get("kind") or "") != "invariant":
+        kind = node.get("kind") or ""
+        if kind not in ("invariant", "ring"):
             continue
         inv_id = node.get("invariant")
         label = node.get("label")
@@ -20,7 +21,6 @@ def _node_label_by_invariant(session: dict[str, Any]) -> dict[str, str]:
         key = str(inv_id)
         text = str(label)
         out[key] = text
-        # Also index lower-case for cas-* mismatches after edits
         out.setdefault(key.lower(), text)
     return out
 
@@ -49,17 +49,28 @@ def build_ternary_invariant_points(
 
         temperature = inv.get("temperature_C")
         notation = inv.get("notation") or src.get("notation")
+        compound_id = src.get("compoundId")
         enrich = enrich_invariant_from_tag(inv_id)
         if enrich:
             notation = notation or enrich.get("notation") or enrich.get("compoundId")
+            compound_id = compound_id or enrich.get("compoundId")
             if temperature is None and enrich.get("temperature_C") is not None:
                 temperature = enrich["temperature_C"]
+
+        point_role = inv.get("pointRole")
+        if point_role not in ("compound", "invariant"):
+            point_role = (
+                "compound"
+                if (notation or compound_id or enrich)
+                else "invariant"
+            )
 
         label = labels.get(inv_id) or labels.get(inv_id.lower()) or notation or inv_id
         points.append(
             {
                 "id": inv_id,
                 "kind": "invariant",
+                "pointRole": point_role,
                 "label": label,
                 "notation": notation,
                 "reaction": inv.get("reaction"),

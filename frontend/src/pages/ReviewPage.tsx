@@ -357,6 +357,10 @@ export function ReviewPage() {
               seedTemperatureC={seedTemperatureC}
               onSeedCount={setSeedCount}
               onSelectionChange={handleSelectionChange}
+              onUndo={async () => {
+                const res = await seClient.post(`/review/sessions/${session.id}/undo`);
+                setSession(res.data as ReviewSession);
+              }}
             />
             <ToolsRail
               tool={tool}
@@ -426,6 +430,32 @@ export function ReviewPage() {
               seedTemperatureC={seedTemperatureC}
               onSeedTemperatureC={setSeedTemperatureC}
               onCommitSeed={requestCommitSeed}
+              onNormalizePoints={async () => {
+                const res = await seClient.post(
+                  `/review/sessions/${session.id}/points/normalize`,
+                );
+                const next = res.data as ReviewSession;
+                setSession(next);
+                const n = next.lastNormalizePoints;
+                setStatus(
+                  n
+                    ? `Normalized points: ${n.clusters ?? 0} cluster(s), replaced ${n.replaced ?? 0}, joined ${n.joined ?? 0} curve(s)`
+                    : 'Normalized points',
+                );
+              }}
+              onClearUnused={async () => {
+                const res = await seClient.post(
+                  `/review/sessions/${session.id}/points/clear-unused`,
+                );
+                const next = res.data as ReviewSession;
+                setSession(next);
+                const c = next.lastClearUnused;
+                setStatus(
+                  c
+                    ? `Cleared unused: −${c.removedNodes ?? 0} nodes, −${c.removedInvariants ?? 0} invariants (kept ${c.keptNodes ?? 0} / ${c.keptInvariants ?? 0})`
+                    : 'Cleared unused points',
+                );
+              }}
               onConfirm={async () => {
                 const res = await seClient.post(`/review/sessions/${session.id}/confirm`);
                 const data = res.data as { session?: ReviewSession };

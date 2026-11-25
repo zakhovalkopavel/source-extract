@@ -3,10 +3,13 @@
 export const ISO_MISSING = '#e10600';
 export const ISO_MISSING_SEL = '#ff2a2a';
 export const BOUNDARY_STROKE = '#0d5c2e';
-export const BOUNDARY_STROKE_SEL = '#1a8f48';
+/** Selected whole-curve stroke — high contrast vs default green. */
+export const BOUNDARY_STROKE_SEL = '#c77dff';
 export const BOUNDARY_HANDLE = '#147a3c';
 export const BOUNDARY_ARROW = '#0f6b36';
 export const PICK_STROKE = '#c77dff';
+/** Image-space snap / reuse radius (screen ≈ this × canvas scale). */
+export const IMAGE_POINT_TOL_PX = 4;
 /** Hollow invariant / compound ring stroke (reference-overlay parity). */
 export const INVARIANT_STROKE = '#1b9e4b';
 export const INVARIANT_STROKE_SEL = '#ffe66d';

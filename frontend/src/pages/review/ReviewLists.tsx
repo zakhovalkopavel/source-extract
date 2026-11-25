@@ -93,16 +93,17 @@ export function ReviewLists({
         </Box>
       </Box>
       <Box>
-        <Typography variant="subtitle2">Invariants ({invariants.length})</Typography>
+        <Typography variant="subtitle2">Points ({invariants.length})</Typography>
         <Box sx={{ maxHeight: 220, overflow: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
           {invariants.length === 0 && (
             <Typography variant="caption" color="text.secondary" sx={{ p: 0.75, display: 'block' }}>
-              None — use Add invariant
+              None — click a C# ring or use Add invariant
             </Typography>
           )}
           {invariants.map((inv) => {
             const sel = selectedInvariantId === inv.id;
             const missing = inv.temperature_C == null;
+            const role = inv.pointRole === 'compound' ? 'compound' : 'invariant';
             return (
               <Box
                 key={inv.id}
@@ -119,6 +120,9 @@ export function ReviewLists({
               >
                 <Typography variant="caption" fontWeight={600} display="block" noWrap>
                   {inv.label || inv.notation || inv.id}
+                  <Box component="span" sx={{ color: 'text.secondary', ml: 0.5 }}>
+                    {role === 'compound' ? 'compound' : 'invariant'}
+                  </Box>
                   {inv.label && inv.label !== inv.id ? (
                     <Box component="span" sx={{ color: 'text.secondary', ml: 0.5 }}>
                       ({inv.id})

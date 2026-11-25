@@ -298,22 +298,29 @@ export function drawSessionView(
         selected.index === b.index &&
         selected.pointIndex != null) ||
       multi.some((m) => m.kind === 'boundary' && m.index === b.index && m.pointIndex != null);
+    const boundaryActive = curveSel || hasPointOnCurve;
     ctx.globalAlpha = curveA;
     strokeCurve(
       ctx,
       pts,
-      curveSel ? BOUNDARY_STROKE_SEL : BOUNDARY_STROKE,
-      w * (curveSel ? 1.5 : 1),
+      boundaryActive ? BOUNDARY_STROKE_SEL : BOUNDARY_STROKE,
+      w * (boundaryActive ? 2.1 : 1),
       !!b.dashed,
       scale,
     );
     if (b.arrows?.length) {
-      drawArrows(ctx, pts, b.arrows, curveSel ? BOUNDARY_STROKE_SEL : BOUNDARY_ARROW, scale);
+      drawArrows(
+        ctx,
+        pts,
+        b.arrows,
+        boundaryActive ? BOUNDARY_STROKE_SEL : BOUNDARY_ARROW,
+        scale,
+      );
     }
-    // Sparse handles only — never paint every dense polyline vertex
-    if (showHandles || curveSel || hasPointOnCurve) {
+    // Sparse handles only — never paint every dense polyline vertex (that twinkles).
+    if (showHandles || boundaryActive) {
       ctx.globalAlpha = pointA;
-      const idxs = curveSel ? [...pts.keys()] : boundaryHandleIndices(pts.length);
+      const idxs = boundaryHandleIndices(pts.length);
       for (const j of idxs) {
         const pt = pts[j];
         if (!pt) continue;
@@ -346,11 +353,12 @@ export function drawSessionView(
         selected.index === iso.index &&
         selected.pointIndex != null) ||
       multi.some((m) => m.kind === 'isotherm' && m.index === iso.index && m.pointIndex != null);
-    const stroke = isothermStrokeColor(iso, curveSel, temps);
-    ctx.globalAlpha = Math.min(1, curveA + (curveSel ? 0.15 : 0));
-    strokeCurve(ctx, pts, stroke, w * (curveSel ? 1.35 : 0.9), !!iso.dashed, scale);
+    const isoActive = curveSel || hasPointOnCurve;
+    const stroke = isothermStrokeColor(iso, isoActive, temps);
+    ctx.globalAlpha = Math.min(1, curveA + (isoActive ? 0.2 : 0));
+    strokeCurve(ctx, pts, stroke, w * (isoActive ? 1.85 : 0.9), !!iso.dashed, scale);
     // Controls are sparse waypoints — never fall back to dense pixels
-    if ((showHandles || curveSel || hasPointOnCurve) && (iso.controls?.length || 0) > 0) {
+    if ((showHandles || isoActive) && (iso.controls?.length || 0) > 0) {
       ctx.globalAlpha = pointA;
       iso.controls!.forEach((pt, j) => {
         if (!pt) return;
@@ -407,8 +415,8 @@ export function drawSessionView(
     const idx = node.nodeIndex ?? node.index;
     if (!p || p.length < 2 || idx == null) continue;
     const kind = node.kind || '';
-    // Invariant nodes duplicate view.invariants — skip so hollow labeled markers win.
-    if (kind === 'invariant') {
+    // Linked I# / C# nodes duplicate view.invariants — skip so hollow labeled markers win.
+    if (kind === 'invariant' || kind === 'ring') {
       const linked = node.invariant || node.id || node.label;
       if (linked && invariantIds.has(String(linked))) continue;
     }

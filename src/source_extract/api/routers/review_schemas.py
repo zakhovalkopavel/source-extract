@@ -54,6 +54,16 @@ class AddPointBody(BaseModel):
     afterIndex: int | None = None
 
 
+class JoinContoursBody(BaseModel):
+    """Merge ``other`` into ``keep`` at a vertex of ``other`` (Add-point on another curve)."""
+
+    contourKind: Literal["boundary", "isotherm"]
+    keepIndex: int
+    otherIndex: int
+    otherPointIndex: int
+    pixel: PixelBody | None = None
+
+
 class ArrowsBody(BaseModel):
     contourIndex: int
     arrows: list[str]
@@ -113,6 +123,12 @@ class MoveInvariantBody(BaseModel):
 class MoveNodeBody(BaseModel):
     nodeIndex: int
     pixel: PixelBody
+
+
+class EnsureNodeInvariantBody(BaseModel):
+    """Promote a compound ring (C#) / node into a draft invariant for editing."""
+
+    nodeIndex: int
 
 
 class MoveCalibrationCornerBody(BaseModel):

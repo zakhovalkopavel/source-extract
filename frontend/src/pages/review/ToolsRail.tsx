@@ -40,6 +40,8 @@ type Props = {
   onRepositionInvariants: () => void;
   onRestoreInvariants: () => void;
   onConfirm: () => void;
+  onClearUnused?: () => void;
+  onNormalizePoints?: () => void;
   onGuidance: () => void;
   onReload: () => void;
   /** Seed isotherm / boundary commit controls. */
@@ -87,6 +89,8 @@ export function ToolsRail({
   onRepositionInvariants,
   onRestoreInvariants,
   onConfirm,
+  onClearUnused,
+  onNormalizePoints,
   onGuidance,
   onReload,
   seedCount = 0,
@@ -245,7 +249,7 @@ export function ToolsRail({
         is off-canvas. Pan: Space / Alt / middle-drag.
       </Typography>
       <Button variant="outlined" disabled={!session || busy} onClick={onUndo}>
-        Undo ({session?.undoDepth ?? 0})
+        Undo Ctrl+Z ({session?.undoDepth ?? 0})
       </Button>
       <Button variant="outlined" disabled={!session || busy} onClick={onReload}>
         Reload draft
@@ -263,6 +267,22 @@ export function ToolsRail({
       </Button>
       <Button variant="contained" disabled={!session || busy} onClick={onAnalyze}>
         Analyze
+      </Button>
+      <Button
+        variant="outlined"
+        disabled={!session || busy || !onNormalizePoints}
+        onClick={onNormalizePoints}
+        title="Join/replace near-duplicates: compound > invariant > simple; shared curve vertices stay linked"
+      >
+        Normalize points
+      </Button>
+      <Button
+        variant="outlined"
+        disabled={!session || busy || !onClearUnused}
+        onClick={onClearUnused}
+        title="Remove nodes/points that are not compounds, have no melting °C, sit off curves, and are not diagram vertices"
+      >
+        Clear unused points
       </Button>
       <Button
         variant="contained"

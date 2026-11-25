@@ -32,8 +32,10 @@ export type SessionView = {
   /** SE alias; diagram-review used ``points``. */
   invariants?: Array<{
     id: string;
-    /** Short canvas label (node I#, notation, or id). */
+    /** Short canvas label (node I#/C#, notation, or id). */
     label?: string | null;
+    /** ``compound`` = named formula point; ``invariant`` = composition + °C (e.g. eutectic). */
+    pointRole?: 'compound' | 'invariant' | null;
     notation?: string | null;
     reaction?: string | null;
     phases?: string[];
@@ -128,6 +130,30 @@ export type ReviewSession = {
     nodeCount?: number;
   };
   lastNodesReload?: { count?: number };
+  lastNodeEnsure?: {
+    nodeIndex?: number;
+    id?: string;
+    created?: boolean;
+    pointRole?: string;
+  };
+  lastContourJoin?: {
+    kind?: string;
+    index?: number;
+    removed?: number;
+    pointIndex?: number;
+  };
+  lastClearUnused?: {
+    removedNodes?: number;
+    removedInvariants?: number;
+    keptNodes?: number;
+    keptInvariants?: number;
+  };
+  lastNormalizePoints?: {
+    clusters?: number;
+    replaced?: number;
+    joined?: number;
+  };
+  lastAddNote?: string;
 };
 
 export type SelectedCurve = { kind: 'boundary' | 'isotherm'; index: number };

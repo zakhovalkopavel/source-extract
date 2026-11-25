@@ -9,7 +9,7 @@ import {
   type SelectionInfo,
   type ToolMode,
 } from '../types';
-import { CANVAS_BG, type ViewOpacity } from './curveStyles';
+import { CANVAS_BG, IMAGE_POINT_TOL_PX, type ViewOpacity } from './curveStyles';
 import { withDraggedPoint } from './dragPreview';
 import { drawSessionView } from './drawView';
 import { hitTestView } from './hitTest';
@@ -44,12 +44,18 @@ type Props = {
   onRegisterDelete?: (fn: () => void) => void;
   /** Register Commit seed handler (Enter / ToolsRail button). */
   onRegisterCommitSeed?: (fn: () => void) => void;
+  /** Session undo (Ctrl+Z when not peeling a seed waypoint). */
+  onUndo?: () => void | Promise<void>;
   /** Field / °C for Seed isotherm (from ToolsRail — no window.prompt). */
   seedField?: string;
   seedTemperatureC?: string;
   /** Live waypoint count for the ToolsRail Commit button. */
   onSeedCount?: (n: number) => void;
 };
+
+function isAdditiveModifier(ev: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): boolean {
+  return ev.ctrlKey || ev.metaKey || ev.shiftKey;
+}
 
 function formatApiError(e: unknown): string {
   const ax = e as { response?: { data?: { detail?: unknown } }; message?: string };
@@ -97,6 +103,7 @@ export function ReviewCanvas({
   focusFieldName = null,
   onRegisterDelete,
   onRegisterCommitSeed,
+  onUndo,
   seedField = '',
   seedTemperatureC = '1500',
   onSeedCount,
@@ -438,6 +445,10 @@ export function ReviewCanvas({
   }, [tool, seed.length]);
 
   const commitSeedRef = useRef<() => Promise<void>>(async () => {});
+  const onUndoRef = useRef(onUndo);
+  onUndoRef.current = onUndo;
+  const seedRef = useRef(seed);
+  seedRef.current = seed;
 
   useEffect(() => {
     onRegisterCommitSeed?.(() => {
@@ -463,6 +474,31 @@ export function ReviewCanvas({
       ) {
         ev.preventDefault();
         void commitSeedRef.current().catch((e) => onStatusRef.current(formatApiError(e)));
+        return;
+      }
+      // Ctrl/⌘+Z — peel last seed waypoint while seeding; otherwise session undo.
+      if (
+        (ev.key === 'z' || ev.key === 'Z') &&
+        (ev.ctrlKey || ev.metaKey) &&
+        !ev.shiftKey &&
+        !ev.altKey
+      ) {
+        if (inField) return;
+        ev.preventDefault();
+        const seeding =
+          toolRef.current === 'seed-boundary' || toolRef.current === 'seed-isotherm';
+        if (seeding && seedRef.current.length > 0) {
+          setSeed((s) => s.slice(0, -1));
+          onStatusRef.current(
+            seedRef.current.length <= 1
+              ? 'Cleared last seed waypoint'
+              : `Removed last seed waypoint (${seedRef.current.length - 1} left)`,
+          );
+          return;
+        }
+        void Promise.resolve(onUndoRef.current?.())
+          .then(() => onStatusRef.current('Undo'))
+          .catch((e) => onStatusRef.current(formatApiError(e)));
         return;
       }
       if (ev.key !== 'Delete' && ev.key !== 'Backspace') return;
@@ -548,7 +584,7 @@ export function ReviewCanvas({
     ev.preventDefault();
     const rect = canvasRef.current!.getBoundingClientRect();
     const screen: Point2 = [ev.clientX - rect.left, ev.clientY - rect.top];
-    // Shift = additive multi-select (diagram-review parity). Pan: middle / Space / Alt.
+    // Ctrl/⌘/Shift = append to multi-select. Pan: middle / Space / Alt.
     const wantPan = ev.button === 1 || spaceDown.current || ev.altKey;
     if (wantPan) {
       beginPan(ev, screen);
@@ -556,15 +592,16 @@ export function ReviewCanvas({
     }
 
     const imgPt = toImage(screen);
-    // Select/delete: tight handle radius so curve-body clicks select the whole curve.
-    // Move/add: larger handle radius so vertices are easy to grab.
-    const curveTol = Math.max(10, 14 / scale);
+    // Tolerances are image pixels (screen ≈ IMAGE_POINT_TOL_PX * scale).
+    // Select/delete: slightly tighter points so curve-body clicks win.
+    // Move/add: full snap radius so nearby shared vertices are easy to grab.
     const pointTol =
       tool === 'select' || tool === 'delete'
-        ? Math.max(4, 5.5 / scale)
-        : Math.max(10, 14 / scale);
+        ? IMAGE_POINT_TOL_PX
+        : IMAGE_POINT_TOL_PX * 1.5;
+    const curveTol = Math.max(IMAGE_POINT_TOL_PX * 2, 8);
     const hit = hitTestView(session.view, imgPt, curveTol, { pointTol });
-    const additive = ev.shiftKey;
+    const additive = isAdditiveModifier(ev);
 
     if (tool === 'select' || tool === 'delete') {
       if (hit?.kind === 'frame') {
@@ -584,6 +621,43 @@ export function ReviewCanvas({
       }
       if (isDeletablePointHit(hit)) {
         fieldClickCandidate.current = null;
+        // C# compound rings → promote into draft invariants so they edit like I#.
+        if (
+          hit?.kind === 'node' &&
+          tool === 'select' &&
+          !additive &&
+          (session.view?.nodes || []).find((n) => (n.nodeIndex ?? n.index) === hit.index)
+            ?.kind === 'ring'
+        ) {
+          void mutate('/nodes/ensure-invariant', { nodeIndex: hit.index })
+            .then((next) => {
+              const ensured = next.lastNodeEnsure;
+              const id = ensured?.id;
+              if (!id) {
+                setSelected(hit);
+                onStatus(`Selected ${hitLabel(hit)}`);
+                return;
+              }
+              setSelected({ kind: 'invariant', id });
+              setMulti([{ kind: 'invariant', id }]);
+              setSelectedField(null);
+              onSelectionChange?.({
+                pointCount: 1,
+                curve: null,
+                canDelete: true,
+                invariantId: id,
+                fieldName: null,
+              });
+              const role = ensured?.pointRole === 'compound' ? 'compound' : 'invariant';
+              onStatus(
+                ensured?.created
+                  ? `Opened ${role} ${id} from ring — set name / °C and Save`
+                  : `Selected ${role} ${id}`,
+              );
+            })
+            .catch((e) => onStatus(formatApiError(e)));
+          return;
+        }
         const next = nextMultiSelection(multi, hit!, additive);
         setMulti(next);
         setSelected(hit);
@@ -602,7 +676,7 @@ export function ReviewCanvas({
         onStatus(
           next.length > 1
             ? `Selected ${next.length} point(s) — Delete/Backspace to remove`
-            : `Selected ${hitLabel(hit!)} — drag to move, Shift+click to add`,
+            : `Selected ${hitLabel(hit!)} — drag to move, Ctrl+click to add`,
         );
         return;
       }
@@ -649,7 +723,7 @@ export function ReviewCanvas({
         onStatus(
           additive
             ? 'Drag to add points — click (no drag) selects the field'
-            : 'Drag to select points — click (no drag) selects the field',
+            : 'Drag to select points — Ctrl+click/drag to add, click selects the field',
         );
         return;
       }
@@ -657,7 +731,7 @@ export function ReviewCanvas({
       // Empty space → marquee (not pan) in select/delete
       fieldClickCandidate.current = null;
       beginMarquee(ev, imgPt, additive);
-      onStatus('Drag to select points — Space/Alt/middle-drag to pan');
+      onStatus('Drag to select points — Ctrl+click to add, Space/Alt/middle-drag to pan');
       return;
     }
 
@@ -677,16 +751,91 @@ export function ReviewCanvas({
       const kind = target.kind as 'boundary' | 'isotherm';
       const index = target.index;
       setSelected({ kind, index });
+
+      // Click a vertex of another same-kind curve → join into one.
+      if (
+        hit &&
+        hit.kind === kind &&
+        hit.index !== index &&
+        hit.pointIndex != null
+      ) {
+        void mutate('/points/join', {
+          contourKind: kind,
+          keepIndex: index,
+          otherIndex: hit.index,
+          otherPointIndex: hit.pointIndex,
+          pixel: { x: imgPt[0], y: imgPt[1] },
+        })
+          .then((next) => {
+            const joined = next.lastContourJoin;
+            const keep = joined?.index ?? index;
+            setSelected({ kind, index: keep });
+            onStatus(`Joined ${kind} #${hit.index} into #${keep} — Undo available`);
+          })
+          .catch((e) => onStatus(formatApiError(e)));
+        return;
+      }
+
+      // Snap to an existing point (invariant / node / frame / same-curve vertex).
+      let px = imgPt[0];
+      let py = imgPt[1];
+      let snapNote = '';
+      if (hit?.kind === 'invariant') {
+        const inv = (session.view?.invariants || session.view?.points || []).find(
+          (p) => p.id === hit.id,
+        );
+        if (inv?.pixel && inv.pixel.length >= 2) {
+          px = Number(inv.pixel[0]);
+          py = Number(inv.pixel[1]);
+          snapNote = ` (snapped to ${inv.label || inv.id})`;
+        }
+      } else if (hit?.kind === 'node') {
+        const node = (session.view?.nodes || []).find(
+          (n) => (n.nodeIndex ?? n.index) === hit.index,
+        );
+        if (node?.pixel && node.pixel.length >= 2) {
+          px = Number(node.pixel[0]);
+          py = Number(node.pixel[1]);
+          snapNote = ` (snapped to ${node.label || `node #${hit.index}`})`;
+        }
+      } else if (hit?.kind === 'frame') {
+        const c = session.view?.cornersImage?.[hit.index];
+        if (c && c.length >= 2) {
+          px = Number(c[0]);
+          py = Number(c[1]);
+          snapNote = ` (snapped to triangle corner)`;
+        }
+      } else if (
+        hit &&
+        (hit.kind === 'boundary' || hit.kind === 'isotherm') &&
+        hit.pointIndex != null
+      ) {
+        const curve =
+          hit.kind === 'isotherm'
+            ? session.view?.isotherms?.find((c) => c.index === hit.index)
+            : session.view?.boundaries?.find((c) => c.index === hit.index);
+        const pts =
+          hit.kind === 'isotherm'
+            ? curve?.controls || curve?.pixels
+            : curve?.pixels;
+        const p = pts?.[hit.pointIndex];
+        if (p && p.length >= 2) {
+          px = Number(p[0]);
+          py = Number(p[1]);
+          snapNote = ' (snapped to existing vertex)';
+        }
+      }
+
       void mutate('/points/add', {
         contourKind: kind,
         contourIndex: index,
-        pixel: { x: imgPt[0], y: imgPt[1] },
+        pixel: { x: px, y: py },
       })
         .then(() => {
           setSelected({ kind, index });
-          onStatus(`Added point on ${kind} #${index} — Undo available`);
+          onStatus(`Added point on ${kind} #${index}${snapNote} — Undo available`);
         })
-        .catch((e) => onStatus(String(e)));
+        .catch((e) => onStatus(formatApiError(e)));
       return;
     }
 
@@ -811,11 +960,12 @@ export function ReviewCanvas({
       const [sw, sh] = marqueeScreenSize(box, scaleRef.current);
       const fieldName = fieldClickCandidate.current;
       fieldClickCandidate.current = null;
+      const additiveUp = isAdditiveModifier(ev);
       if (sw < 6 && sh < 6) {
         // Click without drag on a field → select that field (list click still works too).
         if (
           fieldName &&
-          !ev.shiftKey &&
+          !additiveUp &&
           (toolRef.current === 'select' || toolRef.current === 'delete')
         ) {
           setMulti([]);
@@ -831,7 +981,7 @@ export function ReviewCanvas({
           onStatus(`Selected field ${fieldName}`);
           return;
         }
-        if (!ev.shiftKey && (toolRef.current === 'select' || toolRef.current === 'delete')) {
+        if (!additiveUp && (toolRef.current === 'select' || toolRef.current === 'delete')) {
           setMulti([]);
           setSelected(null);
           setSelectedField(null);
@@ -847,7 +997,7 @@ export function ReviewCanvas({
         selectedRef.current,
       );
       setMulti((prev) => {
-        if (!ev.shiftKey) return refs;
+        if (!additiveUp) return refs;
         const seen = new Set(prev.map(multiKey));
         const merged = [...prev];
         for (const r of refs) {

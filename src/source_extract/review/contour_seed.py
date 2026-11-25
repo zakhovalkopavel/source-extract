@@ -133,6 +133,9 @@ def add_isotherm(
     join_summary = join_same_temperature_isotherms(session, anchor_index=idx)
     if join_summary.get("joined"):
         idx = int(join_summary["index"])
+    from source_extract.review.isotherm_boundary_snap import snap_isotherm_ends_to_boundaries
+
+    snap_isotherm_ends_to_boundaries(session, contour_index=idx)
     session["provenance"]["isotherms"][str(idx)] = "user"
     save_session(session)
     # Ephemeral (not persisted) — UI status only

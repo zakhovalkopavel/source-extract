@@ -18,6 +18,9 @@ from source_extract.review.contour_edits import (
     update_boundary,
     update_isotherm,
 )
+from source_extract.review.clear_unused_points import clear_unused_points
+from source_extract.review.contour_join import join_contours_at_vertex
+from source_extract.review.point_topology import normalize_points
 from source_extract.review.draft_resolver import (
     create_system_stub,
     draft_content_stats,
@@ -28,6 +31,7 @@ from source_extract.review.calibration_edits import move_calibration_corner
 from source_extract.review.invariant_edits import (
     add_invariant,
     delete_invariant,
+    ensure_invariant_from_node,
     move_invariant,
     move_node,
     reposition_invariants_from_wt,
@@ -56,6 +60,7 @@ __all__ = [
     "add_invariant",
     "add_isotherm",
     "add_point",
+    "clear_unused_points",
     "create_session",
     "create_system_stub",
     "cycle_arrow",
@@ -65,7 +70,9 @@ __all__ = [
     "delete_point",
     "delete_points_batch",
     "draft_content_stats",
+    "ensure_invariant_from_node",
     "find_reusable_session",
+    "join_contours_at_vertex",
     "list_available_systems",
     "list_sessions",
     "load_draft",
@@ -75,6 +82,7 @@ __all__ = [
     "move_invariant",
     "move_node",
     "move_point",
+    "normalize_points",
     "prune_duplicate_sessions",
     "public_session",
     "reload_draft_from_disk",

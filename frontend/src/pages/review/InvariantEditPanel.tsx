@@ -89,8 +89,10 @@ export function InvariantEditPanel({
       const next = res.data as ReviewSession;
       onSession(next);
       onInvariantId?.(newId);
+      const saved = viewInvariants(next.view).find((p) => p.id === newId);
+      const savedRole = saved?.pointRole === 'compound' ? 'compound' : 'invariant';
       onStatus(
-        `Saved invariant ${newId}` +
+        `Saved ${savedRole} ${newId}` +
           (temperature_C != null ? ` @ ${temperature_C}°C` : ''),
       );
     } catch (e: unknown) {
@@ -106,17 +108,26 @@ export function InvariantEditPanel({
     }
   }
 
+  const role = inv?.pointRole === 'compound' ? 'compound' : 'invariant';
+
   return (
     <Stack spacing={1} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1 }}>
-      <Typography variant="subtitle2">Invariant edit</Typography>
+      <Typography variant="subtitle2">
+        {role === 'compound' ? 'Compound point' : 'Invariant point'}
+      </Typography>
+      <Typography variant="caption" color="text.secondary">
+        {role === 'compound'
+          ? 'Named formula / compound (e.g. A3S2). Same edit tools as invariants.'
+          : 'Composition + melting °C (eutectic / peritectic / …). Add a special name to mark as compound.'}
+      </Typography>
       {!inv && (
         <Typography variant="caption" color="warning.main">
-          Invariant not in view — try selecting again
+          Point not in view — try selecting again
         </Typography>
       )}
       <TextField
         size="small"
-        label="Id / notation"
+        label={role === 'compound' ? 'Compound name / notation' : 'Id / notation'}
         value={id}
         onChange={(e) => setId(e.target.value)}
         onKeyDown={(e) => {
@@ -175,7 +186,7 @@ export function InvariantEditPanel({
         disabled={busy || saving}
         onClick={() => void save()}
       >
-        Save invariant
+        Save point
       </Button>
     </Stack>
   );

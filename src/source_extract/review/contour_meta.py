@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from source_extract.review.retrace import (
+    densify_from_image_waypoints,
     polyline_wt_to_image_pixels,
     polylines_cross,
     rebuild_smooth_from_control_wt,

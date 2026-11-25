@@ -17,6 +17,8 @@ from source_extract.api.routers.review_schemas import (
     DeleteIsothermBody,
     DeletePointBody,
     DeletePointsBatchBody,
+    EnsureNodeInvariantBody,
+    JoinContoursBody,
     MoveCalibrationCornerBody,
     MoveInvariantBody,
     MoveNodeBody,
@@ -76,6 +78,24 @@ def delete_points_batch(session_id: str, body: DeletePointsBatchBody) -> dict[st
         raise HTTPException(400, str(exc)) from exc
 
 
+@router.post("/sessions/{session_id}/points/clear-unused")
+def clear_unused_points(session_id: str) -> dict[str, Any]:
+    """Remove nodes/invariants that are not special, have no °C, and sit off curves."""
+    try:
+        return _ok(S.clear_unused_points(_load(session_id)))
+    except (IndexError, ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/points/normalize")
+def normalize_points(session_id: str) -> dict[str, Any]:
+    """Coalesce near-duplicates by priority (compound > invariant > simple) and join curves."""
+    try:
+        return _ok(S.normalize_points(_load(session_id)))
+    except (IndexError, ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.post("/sessions/{session_id}/points/add")
 def add_point(session_id: str, body: AddPointBody) -> dict[str, Any]:
     try:
@@ -86,6 +106,26 @@ def add_point(session_id: str, body: AddPointBody) -> dict[str, Any]:
                 contour_index=body.contourIndex,
                 image_pixel=[body.pixel.x, body.pixel.y],
                 after_index=body.afterIndex,
+            )
+        )
+    except (IndexError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/points/join")
+def join_contours(session_id: str, body: JoinContoursBody) -> dict[str, Any]:
+    """Join two boundaries/isotherms at a vertex of the other curve (Add-point gesture)."""
+    try:
+        return _ok(
+            S.join_contours_at_vertex(
+                _load(session_id),
+                contour_kind=body.contourKind,
+                keep_index=body.keepIndex,
+                other_index=body.otherIndex,
+                other_point_index=body.otherPointIndex,
+                image_pixel=(
+                    [body.pixel.x, body.pixel.y] if body.pixel is not None else None
+                ),
             )
         )
     except (IndexError, ValueError) as exc:
@@ -266,6 +306,20 @@ def move_node(session_id: str, body: MoveNodeBody) -> dict[str, Any]:
             )
         )
     except (IndexError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/nodes/ensure-invariant")
+def ensure_node_invariant(session_id: str, body: EnsureNodeInvariantBody) -> dict[str, Any]:
+    """Promote a C# ring (or other node) into a draft invariant — same edit UX as I#."""
+    try:
+        return _ok(
+            S.ensure_invariant_from_node(
+                _load(session_id),
+                node_index=body.nodeIndex,
+            )
+        )
+    except (IndexError, ValueError, KeyError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
 

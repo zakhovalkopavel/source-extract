@@ -4,10 +4,24 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from source_extract.review.nodes_attach import _stored_to_image_pixel
 from source_extract.review.retrace import polyline_wt_to_image_pixels, rebuild_smooth_from_control_wt
 from source_extract.review.session_common import ContourKind, _corners_origin
 
-POINT_COALESCE_RADIUS_PX = 10.0
+# Image-pixel radius — matches frontend IMAGE_POINT_TOL_PX (screen ≈ this × scale).
+POINT_COALESCE_RADIUS_PX = 4.0
+
+
+def _boundary_handle_indices(pixel_count: int) -> list[int]:
+    if pixel_count <= 0:
+        return []
+    if pixel_count <= 14:
+        return list(range(pixel_count))
+    idxs = {0, pixel_count - 1}
+    step = max(1, (pixel_count - 1) // 12)
+    for i in range(step, pixel_count - 1, step):
+        idxs.add(i)
+    return sorted(idxs)
 
 
 def _mover_identity(
@@ -45,18 +59,45 @@ def _is_same_point(a: dict[str, Any], b: dict[str, Any]) -> bool:
     )
 
 
-def _list_point_locations(session: dict[str, Any]) -> list[dict[str, Any]]:
-    """Editable points with image-pixel positions for coalesce hit-tests."""
+def _list_discrete_landmarks(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Sparse editable landmarks (not dense boundary polyline samples).
+
+    Includes invariants, nodes, isotherm controls, boundary control handles,
+    and calibration triangle corners. Shared vertices across curves are OK —
+    coalesce / snap reuse these instead of inventing near-duplicates.
+    """
     components, corners, origin = _corners_origin(session)
     draft = session["draft"]
-    stored_origin = session.get("pixelOrigin") or draft.get("digitization", {}).get("storedPixelOrigin") or [0, 0]
+    stored_origin = session.get("pixelOrigin") or draft.get("digitization", {}).get(
+        "storedPixelOrigin"
+    ) or [0, 0]
     cfg_origin = (float(stored_origin[0]), float(stored_origin[1]))
     out: list[dict[str, Any]] = []
 
+    # Triangle frame corners (diagram vertices)
+    for i, name in enumerate(components):
+        pure = [100.0 if j == i else 0.0 for j in range(len(components))]
+        pix = polyline_wt_to_image_pixels(
+            [pure], corners=corners, origin=origin, components=components
+        )[0]
+        out.append(
+            {
+                "type": "frame",
+                "index": i,
+                "id": name,
+                "x": float(pix[0]),
+                "y": float(pix[1]),
+            }
+        )
+
     for inv in draft.get("invariantPoints", []):
         wt = [inv["liquid_wt"][c] for c in components]
-        pix = polyline_wt_to_image_pixels([wt], corners=corners, origin=origin, components=components)[0]
-        out.append({"type": "invariant", "id": inv["id"], "x": float(pix[0]), "y": float(pix[1])})
+        pix = polyline_wt_to_image_pixels(
+            [wt], corners=corners, origin=origin, components=components
+        )[0]
+        out.append(
+            {"type": "invariant", "id": inv["id"], "x": float(pix[0]), "y": float(pix[1])}
+        )
 
     for node_index, node in enumerate(session.get("nodes") or []):
         stored = node.get("pixel") or [0, 0]
@@ -79,31 +120,87 @@ def _list_point_locations(session: dict[str, Any]) -> list[dict[str, Any]]:
                 "type": "node",
                 "index": node_index,
                 "id": node.get("label") or node.get("id"),
+                "kind": node.get("kind"),
                 "x": float(pix[0]),
                 "y": float(pix[1]),
             }
         )
 
     for i, bc in enumerate(draft.get("boundaryCurves", [])):
-        poly = bc.get("polyline_wt") or []
-        pixels = polyline_wt_to_image_pixels(poly, corners=corners, origin=origin, components=components)
-        for j, pix in enumerate(pixels):
-            out.append(
-                {"type": "vertex", "kind": "boundary", "index": i, "pointIndex": j, "x": float(pix[0]), "y": float(pix[1])}
+        controls = list(bc.get("control_wt") or [])
+        if controls:
+            pixels = polyline_wt_to_image_pixels(
+                controls, corners=corners, origin=origin, components=components
             )
+            for j, pix in enumerate(pixels):
+                out.append(
+                    {
+                        "type": "vertex",
+                        "kind": "boundary",
+                        "index": i,
+                        "pointIndex": j,
+                        "x": float(pix[0]),
+                        "y": float(pix[1]),
+                    }
+                )
+        else:
+            poly = bc.get("polyline_wt") or []
+            pixels = polyline_wt_to_image_pixels(
+                poly, corners=corners, origin=origin, components=components
+            )
+            for j in _boundary_handle_indices(len(pixels)):
+                pix = pixels[j]
+                out.append(
+                    {
+                        "type": "vertex",
+                        "kind": "boundary",
+                        "index": i,
+                        "pointIndex": j,
+                        "x": float(pix[0]),
+                        "y": float(pix[1]),
+                    }
+                )
 
     for i, iso in enumerate(draft.get("isotherms", [])):
         controls = iso.get("control_wt") or []
         if controls:
-            pixels = polyline_wt_to_image_pixels(controls, corners=corners, origin=origin, components=components)
+            pixels = polyline_wt_to_image_pixels(
+                controls, corners=corners, origin=origin, components=components
+            )
+            for j, pix in enumerate(pixels):
+                out.append(
+                    {
+                        "type": "vertex",
+                        "kind": "isotherm",
+                        "index": i,
+                        "pointIndex": j,
+                        "x": float(pix[0]),
+                        "y": float(pix[1]),
+                    }
+                )
         else:
             poly = iso.get("polyline_wt") or []
-            pixels = polyline_wt_to_image_pixels(poly, corners=corners, origin=origin, components=components)
-        for j, pix in enumerate(pixels):
-            out.append(
-                {"type": "vertex", "kind": "isotherm", "index": i, "pointIndex": j, "x": float(pix[0]), "y": float(pix[1])}
+            pixels = polyline_wt_to_image_pixels(
+                poly, corners=corners, origin=origin, components=components
             )
+            for j in _boundary_handle_indices(len(pixels)):
+                pix = pixels[j]
+                out.append(
+                    {
+                        "type": "vertex",
+                        "kind": "isotherm",
+                        "index": i,
+                        "pointIndex": j,
+                        "x": float(pix[0]),
+                        "y": float(pix[1]),
+                    }
+                )
     return out
+
+
+def _list_point_locations(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Alias — coalesce / snap use discrete landmarks only."""
+    return _list_discrete_landmarks(session)
 
 
 def _overlaps_at(
@@ -116,7 +213,10 @@ def _overlaps_at(
     x, y = float(image_pixel[0]), float(image_pixel[1])
     r2 = radius_px * radius_px
     hits: list[dict[str, Any]] = []
-    for loc in _list_point_locations(session):
+    for loc in _list_discrete_landmarks(session):
+        if loc.get("type") == "frame":
+            # Frame corners are never deleted by coalesce — they are shared anchors.
+            continue
         if _is_same_point(exclude, loc):
             continue
         dx = float(loc["x"]) - x
@@ -187,20 +287,12 @@ def _finish_move_coalesce(
     mover: dict[str, Any],
     image_pixel: list[float],
 ) -> str | None:
-    """After a move: replace coincident points, or drop the mover onto an invariant.
+    """Delegate to topology (priority replace + shared cluster + curve join)."""
+    from source_extract.review.point_topology import finish_topology_move
 
-    General replace rule: the moved point replaces whatever it lands on.
-    Exception: an invariant under the drop always wins — the moved point is removed.
-    """
-    overlaps = _overlaps_at(session, image_pixel, exclude=mover)
-    if not overlaps:
-        return None
-    foreign_inv = [o for o in overlaps if o.get("type") == "invariant"]
-    if foreign_inv:
-        _delete_mover_no_undo(session, mover)
-        return "Kept invariant — removed the point you moved onto it"
-    n = _delete_overlap_targets_no_undo(session, overlaps)
-    return f"Replaced {n} coincident point(s)" if n else None
+    return finish_topology_move(
+        session, mover=mover, old_pixel=None, new_pixel=image_pixel
+    )
 
 
 def _rekey_provenance(prov: dict[str, Any], *, removed: int) -> None:

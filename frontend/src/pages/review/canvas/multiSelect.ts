@@ -32,7 +32,7 @@ export function isMultiSelected(multi: Hit[], hit: Hit): boolean {
   return multi.some((m) => multiKey(m) === k);
 }
 
-/** Toggle or replace multi-selection (Shift = additive / toggle). */
+/** Toggle or replace multi-selection (Ctrl/⌘/Shift = additive / toggle). */
 export function nextMultiSelection(prev: Hit[], hit: Hit, additive: boolean): Hit[] {
   if (!additive) return [hit];
   if (isMultiSelected(prev, hit)) return prev.filter((m) => !hitsEqual(m, hit));
