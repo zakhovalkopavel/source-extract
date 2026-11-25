@@ -1,4 +1,6 @@
 import type { Hit, Point2, SessionView } from '../types';
+import { pointInPolygon } from './pointInPolygon';
+import { viewInvariants } from './viewInvariants';
 
 function dist(a: Point2, b: Point2): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -48,29 +50,56 @@ function hitPolylineBody(
   return best;
 }
 
+export type HitTestOpts = {
+  /**
+   * Radius for discrete handles / invariants / nodes.
+   * Defaults to ``curveTol``. Use a smaller value in select/delete so clicking
+   * the curve body selects the whole curve instead of a nearby control point.
+   */
+  pointTol?: number;
+};
+
 /**
- * Prefer discrete points/handles, then whole-curve body hits.
- * ``tol`` is in image pixels (caller should scale generously for select).
+ * Prefer discrete points/handles within ``pointTol``, else whole-curve body within ``curveTol``.
+ * ``curveTol`` / ``pointTol`` are in image pixels.
  */
-export function hitTestView(view: SessionView | undefined, imgPt: Point2, tol: number): Hit | null {
+export function hitTestView(
+  view: SessionView | undefined,
+  imgPt: Point2,
+  curveTol: number,
+  opts?: HitTestOpts,
+): Hit | null {
   if (!view) return null;
+  const pointTol = opts?.pointTol ?? curveTol;
 
   let bestPoint: { hit: Hit; d: number } | null = null;
 
-  for (const inv of view.invariants || []) {
+  // Calibration triangle corners — easy to grab (slightly larger pick radius)
+  const frameTol = Math.max(pointTol, pointTol * 1.35);
+  for (let i = 0; i < (view.cornersImage || []).length; i++) {
+    const p = asPt(view.cornersImage![i]);
+    if (!p) continue;
+    const d = dist(p, imgPt);
+    if (d <= frameTol && (!bestPoint || d < bestPoint.d)) {
+      bestPoint = { hit: { kind: 'frame', index: i }, d };
+    }
+  }
+
+  for (const inv of viewInvariants(view)) {
     const p = asPt(inv.pixel);
     if (!p) continue;
     const d = dist(p, imgPt);
-    if (d <= tol && (!bestPoint || d < bestPoint.d)) {
+    if (d <= pointTol && (!bestPoint || d < bestPoint.d)) {
       bestPoint = { hit: { kind: 'invariant', id: inv.id }, d };
     }
   }
   for (const node of view.nodes || []) {
     const p = asPt(node.pixel);
-    if (!p) continue;
+    const idx = node.nodeIndex ?? node.index;
+    if (!p || idx == null) continue;
     const d = dist(p, imgPt);
-    if (d <= tol && (!bestPoint || d < bestPoint.d)) {
-      bestPoint = { hit: { kind: 'node', index: node.index }, d };
+    if (d <= pointTol && (!bestPoint || d < bestPoint.d)) {
+      bestPoint = { hit: { kind: 'node', index: idx }, d };
     }
   }
   for (const iso of view.isotherms || []) {
@@ -79,7 +108,7 @@ export function hitTestView(view: SessionView | undefined, imgPt: Point2, tol: n
       const p = asPt(controls[j]);
       if (!p) continue;
       const d = dist(p, imgPt);
-      if (d <= tol && (!bestPoint || d < bestPoint.d)) {
+      if (d <= pointTol && (!bestPoint || d < bestPoint.d)) {
         bestPoint = { hit: { kind: 'isotherm', index: iso.index, pointIndex: j }, d };
       }
     }
@@ -91,7 +120,7 @@ export function hitTestView(view: SessionView | undefined, imgPt: Point2, tol: n
       const p = asPt(pix[j]);
       if (!p) continue;
       const d = dist(p, imgPt);
-      if (d <= tol && (!bestPoint || d < bestPoint.d)) {
+      if (d <= pointTol && (!bestPoint || d < bestPoint.d)) {
         bestPoint = { hit: { kind: 'boundary', index: b.index, pointIndex: j }, d };
       }
     }
@@ -102,7 +131,7 @@ export function hitTestView(view: SessionView | undefined, imgPt: Point2, tol: n
       const p = asPt(pts[j]);
       if (!p) continue;
       const d = dist(p, imgPt);
-      if (d <= tol && (!bestPoint || d < bestPoint.d)) {
+      if (d <= pointTol && (!bestPoint || d < bestPoint.d)) {
         bestPoint = { hit: { kind: 'liquidus', index: liq.index, pointIndex: j }, d };
       }
     }
@@ -112,16 +141,26 @@ export function hitTestView(view: SessionView | undefined, imgPt: Point2, tol: n
   // Curve body (select / highlight / avoid accidental pan)
   let bestCurve: { hit: Hit; d: number } | null = null;
   for (const iso of view.isotherms || []) {
-    const h = hitPolylineBody('isotherm', iso.index, iso.pixels || [], imgPt, tol);
+    const h = hitPolylineBody('isotherm', iso.index, iso.pixels || [], imgPt, curveTol);
     if (h && (!bestCurve || h.d < bestCurve.d)) bestCurve = h;
   }
   for (const b of view.boundaries || []) {
-    const h = hitPolylineBody('boundary', b.index, b.pixels || [], imgPt, tol);
+    const h = hitPolylineBody('boundary', b.index, b.pixels || [], imgPt, curveTol);
     if (h && (!bestCurve || h.d < bestCurve.d)) bestCurve = h;
   }
   for (const liq of view.liquidus || []) {
-    const h = hitPolylineBody('liquidus', liq.index, liq.pixels || [], imgPt, tol);
+    const h = hitPolylineBody('liquidus', liq.index, liq.pixels || [], imgPt, curveTol);
     if (h && (!bestCurve || h.d < bestCurve.d)) bestCurve = h;
   }
-  return bestCurve?.hit ?? null;
+  if (bestCurve) return bestCurve.hit;
+
+  // Field fills (under curves) — last so handles/curves win
+  for (const field of view.fields || []) {
+    for (const ring of field.polygons || []) {
+      if (pointInPolygon(imgPt, ring)) {
+        return { kind: 'field', name: field.name };
+      }
+    }
+  }
+  return null;
 }

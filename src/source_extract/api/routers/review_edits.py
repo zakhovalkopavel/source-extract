@@ -17,6 +17,7 @@ from source_extract.api.routers.review_schemas import (
     DeleteIsothermBody,
     DeletePointBody,
     DeletePointsBatchBody,
+    MoveCalibrationCornerBody,
     MoveInvariantBody,
     MoveNodeBody,
     MovePointBody,
@@ -221,6 +222,39 @@ def move_invariant(session_id: str, body: MoveInvariantBody) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
 
 
+@router.post("/sessions/{session_id}/invariants/reposition")
+def reposition_invariants(session_id: str) -> dict[str, Any]:
+    """Snap invariant markers onto the triangle from ``liquid_wt`` (not a full Analyze)."""
+    try:
+        return _ok(S.reposition_invariants_from_wt(_load(session_id)))
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/nodes/reload")
+def reload_nodes(session_id: str) -> dict[str, Any]:
+    """Refresh pd-nodes (I# / C# labels) from disk without replacing the draft."""
+    try:
+        return _ok(S.reload_nodes(_load(session_id)))
+    except (ValueError, KeyError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/invariants/restore")
+def restore_invariants(session_id: str) -> dict[str, Any]:
+    """Merge missing / incomplete invariants from candidates/systems + reload nodes."""
+    try:
+        session = _load(session_id)
+        return _ok(
+            S.restore_invariants_from_disk(
+                session,
+                preferred_source=session.get("draftSource"),
+            )
+        )
+    except (ValueError, KeyError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.post("/sessions/{session_id}/nodes/move")
 def move_node(session_id: str, body: MoveNodeBody) -> dict[str, Any]:
     try:
@@ -232,6 +266,20 @@ def move_node(session_id: str, body: MoveNodeBody) -> dict[str, Any]:
             )
         )
     except (IndexError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/calibration/corners/move")
+def move_calibration_corner(session_id: str, body: MoveCalibrationCornerBody) -> dict[str, Any]:
+    try:
+        return _ok(
+            S.move_calibration_corner(
+                _load(session_id),
+                component_index=body.componentIndex,
+                image_pixel=[body.pixel.x, body.pixel.y],
+            )
+        )
+    except (IndexError, ValueError, KeyError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
@@ -255,14 +303,17 @@ def add_invariant(session_id: str, body: AddInvariantBody) -> dict[str, Any]:
 @router.post("/sessions/{session_id}/invariants/{point_id}")
 def update_invariant(session_id: str, point_id: str, body: UpdateInvariantBody) -> dict[str, Any]:
     try:
+        # ``exclude_unset`` so JSON null for °C can clear temperature_C.
+        patch = body.model_dump(exclude_unset=True)
         return _ok(
             S.update_invariant(
                 _load(session_id),
                 point_id=point_id,
-                temperature_C=body.temperature_C,
-                phases=body.phases,
-                reaction=body.reaction,
-                new_id=body.newId,
+                temperature_C=patch.get("temperature_C"),
+                phases=patch.get("phases"),
+                reaction=patch.get("reaction"),
+                new_id=patch.get("newId"),
+                set_temperature="temperature_C" in patch,
             )
         )
     except (KeyError, ValueError) as exc:

@@ -110,6 +110,13 @@ def add_invariant(
     invs = session["draft"].setdefault("invariantPoints", [])
     if any(p.get("id") == pid for p in invs):
         raise ValueError(f"Invariant '{pid}' already exists")
+    from source_extract.review.invariant_compound_lookup import enrich_invariant_from_tag
+
+    enrich = enrich_invariant_from_tag(pid)
+    if temperature_C is None and enrich.get("temperature_C") is not None:
+        temperature_C = float(enrich["temperature_C"])
+    if not phases and enrich.get("phases"):
+        phases = list(enrich["phases"])
     _push_undo(session)
     draft = session["draft"]
     components = list(draft["components"])
@@ -137,6 +144,9 @@ def add_invariant(
     for name in phase_list:
         if name not in session["draft"].setdefault("phases", []):
             session["draft"]["phases"].append(name)
+    temp_source = None
+    if temperature_C is not None:
+        temp_source = "compound-data" if enrich.get("temperature_C") is not None else "user"
     entry: dict[str, Any] = {
         "id": pid,
         "type": "ternary" if len(components) == 3 else "binary",
@@ -149,13 +159,22 @@ def add_invariant(
             {
                 "ref": "source-extract-review",
                 "composition": "digitized",
-                "temperature": "user" if temperature_C is not None else None,
+                "temperature": temp_source,
+                "compoundId": enrich.get("compoundId"),
+                "notation": enrich.get("notation"),
                 "pixel": [round(float(page[0]), 1), round(float(page[1]), 1)],
             }
         ],
     }
     invs.append(entry)
     session["provenance"].setdefault("points", {})[pid] = "user"
+    session["_lastInvariantLookup"] = {
+        "id": pid,
+        "compoundId": enrich.get("compoundId"),
+        "notation": enrich.get("notation"),
+        "temperature_C": temperature_C,
+        "resolved": bool(enrich),
+    }
     save_session(session)
     return session
 
@@ -168,8 +187,13 @@ def update_invariant(
     phases: list[str] | None = None,
     reaction: str | None = None,
     new_id: str | None = None,
+    set_temperature: bool = False,
 ) -> dict[str, Any]:
-    """Update metadata on an existing invariant (temperature / id / phases)."""
+    """Update metadata on an existing invariant (temperature / id / phases).
+
+    Pass ``set_temperature=True`` to apply ``temperature_C`` even when it is ``None``
+    (clears °C). When ``set_temperature`` is false, temperature is left unchanged.
+    """
     invs = session["draft"].setdefault("invariantPoints", [])
     idx = next((i for i, p in enumerate(invs) if p.get("id") == point_id), None)
     if idx is None:
@@ -189,8 +213,8 @@ def update_invariant(
             prov[nid] = prov.pop(old)
         else:
             prov[nid] = "user"
-    if temperature_C is not None:
-        inv["temperature_C"] = float(temperature_C)
+    if set_temperature:
+        inv["temperature_C"] = None if temperature_C is None else float(temperature_C)
         inv["status"] = "user"
     if phases is not None:
         phase_list = [p for p in phases if p]
@@ -199,8 +223,39 @@ def update_invariant(
             if name not in session["draft"].setdefault("phases", []):
                 session["draft"]["phases"].append(name)
     if reaction is not None:
-        inv["reaction"] = reaction
+        inv["reaction"] = reaction or None
     session["provenance"].setdefault("points", {})[str(inv["id"])] = "user"
+    save_session(session)
+    return session
+
+
+def reposition_invariants_from_wt(session: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite each invariant ``sources[].pixel`` from ``liquid_wt`` (page space).
+
+    Snaps markers onto the triangle from stored compositions. Does not re-run Analyze
+    / topology search. One undo step.
+    """
+    if not session.get("draft", {}).get("invariantPoints"):
+        return session
+    _push_undo(session)
+    components, corners, origin = _corners_origin(session)
+    from source_extract.review.retrace import polyline_wt_to_image_pixels
+
+    n = 0
+    for inv in session["draft"]["invariantPoints"]:
+        wt = [float(inv["liquid_wt"][c]) for c in components]
+        img = polyline_wt_to_image_pixels(
+            [wt], corners=corners, origin=origin, components=components  # type: ignore[arg-type]
+        )[0]
+        page = image_to_page_pixel((img[0], img[1]), origin)  # type: ignore[arg-type]
+        sources = inv.setdefault("sources", [{}])
+        if not sources:
+            sources.append({})
+            inv["sources"] = sources
+        sources[0]["pixel"] = [round(float(page[0]), 1), round(float(page[1]), 1)]
+        sources[0]["composition"] = sources[0].get("composition") or "from-wt"
+        n += 1
+    session["_lastInvariantReposition"] = {"count": n}
     save_session(session)
     return session
 

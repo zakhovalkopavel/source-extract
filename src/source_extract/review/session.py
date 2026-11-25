@@ -24,13 +24,16 @@ from source_extract.review.draft_resolver import (
     list_available_systems,
     load_draft,
 )
+from source_extract.review.calibration_edits import move_calibration_corner
 from source_extract.review.invariant_edits import (
     add_invariant,
     delete_invariant,
     move_invariant,
     move_node,
+    reposition_invariants_from_wt,
     update_invariant,
 )
+from source_extract.review.invariant_restore import reload_nodes, restore_invariants_from_disk
 from source_extract.review.nodes_attach import merge_detected_isotherms
 from source_extract.review.session_factory import (
     create_session,
@@ -68,13 +71,17 @@ __all__ = [
     "load_draft",
     "load_session",
     "merge_detected_isotherms",
+    "move_calibration_corner",
     "move_invariant",
     "move_node",
     "move_point",
     "prune_duplicate_sessions",
     "public_session",
     "reload_draft_from_disk",
+    "reload_nodes",
     "remap_contour",
+    "reposition_invariants_from_wt",
+    "restore_invariants_from_disk",
     "retrace_contour",
     "save_session",
     "session_path",

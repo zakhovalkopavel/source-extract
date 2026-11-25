@@ -7,11 +7,17 @@ export const BOUNDARY_STROKE_SEL = '#1a8f48';
 export const BOUNDARY_HANDLE = '#147a3c';
 export const BOUNDARY_ARROW = '#0f6b36';
 export const PICK_STROKE = '#c77dff';
-export const INVARIANT_FILL = '#ffc800';
+/** Hollow invariant / compound ring stroke (reference-overlay parity). */
+export const INVARIANT_STROKE = '#1b9e4b';
+export const INVARIANT_STROKE_SEL = '#ffe66d';
+export const INVARIANT_LABEL = '#0b3d1c';
 export const SEED_STROKE = '#4cc9f0';
 export const SEED_SNAP = '#ffd166';
 export const IMMISCIBILITY = '#00e5ff';
 export const CANVAS_BG = '#0e1014';
+/** Calibration triangle / axes frame (cornersImage). */
+export const FRAME_STROKE = '#ff9f1c';
+export const FRAME_CORNER = '#ffbe0b';
 
 /** No reds (missing °C) and no greens (boundaries only). */
 export const ISO_PALETTE = [
@@ -42,6 +48,45 @@ export const NODE_COLORS: Record<string, string> = {
   ring: '#c77dff',
 };
 
+/** Soft fills for primary-phase fields (parity with ternary overlay palette). */
+export const FIELD_PALETTE = [
+  '#e6194b',
+  '#3cb44b',
+  '#ffe119',
+  '#0082c8',
+  '#f58231',
+  '#911eb4',
+  '#46f0f0',
+  '#f032e6',
+  '#d2f53c',
+  '#fabebe',
+  '#008080',
+  '#e6beff',
+  '#aa6e28',
+  '#fffac8',
+  '#800000',
+  '#aaffc3',
+  '#808000',
+  '#ffd8b1',
+  '#000080',
+  '#808080',
+];
+
+/** Flat palette colour for a field (selection uses outline, not a colour swap). */
+export function fieldFillColor(colorIndex: number | undefined, _selected = false): string {
+  return FIELD_PALETTE[Math.max(0, colorIndex ?? 0) % FIELD_PALETTE.length];
+}
+
+/** Convert ``#rrggbb`` + opacity 0–1 → ``rgba(...)`` for flat monocolour fills. */
+export function fieldFillRgba(colorIndex: number | undefined, alpha: number): string {
+  const hex = fieldFillColor(colorIndex);
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const a = Math.max(0, Math.min(1, alpha));
+  return `rgba(${r},${g},${b},${a})`;
+}
+
 export type ViewOpacity = {
   points: number;
   curves: number;
@@ -49,6 +94,8 @@ export type ViewOpacity = {
   reference: number;
   live: number;
   nodes: number;
+  /** Primary-phase field fills. */
+  fields: number;
   /** Curve stroke thickness in screen pixels (≈0.5–4). */
   curveWidth: number;
   /** Handle / invariant / node radius in screen pixels (≈1–8). */
@@ -59,11 +106,12 @@ export const DEFAULT_VIEW_OPACITY: ViewOpacity = {
   points: 1,
   curves: 1,
   all: 1,
-  reference: 0.45,
-  // Live PNG already draws thick Pillow strokes — keep off; vectors are the editor overlay
+  // Reference / live PNGs superseded by frontend vector drawing
+  reference: 0,
   live: 0,
   nodes: 1,
-  curveWidth: 1,
+  fields: 0.55,
+  curveWidth: 2,
   pointSize: 3,
 };
 

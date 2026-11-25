@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from source_extract.review.isotherm_join_helpers import (
@@ -13,6 +14,7 @@ from source_extract.review.isotherm_join_helpers import (
     pieces_interact,
 )
 from source_extract.review.retrace import (
+    polyline_wt_to_image_pixels,
     rebuild_smooth_from_control_wt,
     smooth_curve_from_image_waypoints,
 )

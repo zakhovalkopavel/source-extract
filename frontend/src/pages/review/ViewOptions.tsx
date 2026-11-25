@@ -4,6 +4,7 @@ import {
   CURVE_WIDTH_MAX,
   CURVE_WIDTH_MIN,
   DEFAULT_VIEW_OPACITY,
+  FIELD_PALETTE,
   ISO_MISSING,
   ISO_PALETTE,
   POINT_SIZE_MAX,
@@ -52,6 +53,7 @@ export function ViewOptions({ opacity, onOpacity, session }: Props) {
   const missing = (session?.view?.isotherms || []).some(
     (iso) => iso.temperature_C == null || !Number.isFinite(Number(iso.temperature_C)),
   );
+  const fieldLegend = (session?.view?.fields || []).filter((f) => (f.polygons || []).length > 0);
   const curveWidth = opacity.curveWidth ?? DEFAULT_VIEW_OPACITY.curveWidth;
   const pointSize = opacity.pointSize ?? DEFAULT_VIEW_OPACITY.pointSize;
 
@@ -111,14 +113,9 @@ export function ViewOptions({ opacity, onOpacity, session }: Props) {
         onChange={(v) => onOpacity({ ...opacity, nodes: v })}
       />
       <OpacitySlider
-        label="Live overlay"
-        value={opacity.live}
-        onChange={(v) => onOpacity({ ...opacity, live: v })}
-      />
-      <OpacitySlider
-        label="Reference overlay"
-        value={opacity.reference}
-        onChange={(v) => onOpacity({ ...opacity, reference: v })}
+        label="Fields"
+        value={opacity.fields ?? DEFAULT_VIEW_OPACITY.fields}
+        onChange={(v) => onOpacity({ ...opacity, fields: v })}
       />
       <Typography
         variant="caption"
@@ -156,6 +153,33 @@ export function ViewOptions({ opacity, onOpacity, session }: Props) {
             <Typography variant="caption">isotherm (no °C)</Typography>
           </Stack>
         )}
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Box
+            sx={{
+              width: 14,
+              height: 14,
+              borderRadius: '50%',
+              border: '2px solid',
+              borderColor: '#1b9e4b',
+              boxSizing: 'border-box',
+            }}
+          />
+          <Typography variant="caption">invariant (name + °C)</Typography>
+        </Stack>
+        {fieldLegend.slice(0, 12).map((f) => (
+          <Stack key={f.name} direction="row" spacing={1} alignItems="center">
+            <Box
+              sx={{
+                width: 14,
+                height: 14,
+                bgcolor: FIELD_PALETTE[(f.colorIndex ?? 0) % FIELD_PALETTE.length],
+                borderRadius: 0.5,
+                opacity: 0.85,
+              }}
+            />
+            <Typography variant="caption">{f.name}</Typography>
+          </Stack>
+        ))}
       </Stack>
     </Stack>
   );

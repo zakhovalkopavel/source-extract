@@ -12,6 +12,8 @@ from source_extract.review.retrace import (
     polyline_wt_to_image_pixels,
     rebuild_smooth_from_control_wt,
 )
+from source_extract.review.field_view_regions import build_field_view_regions
+from source_extract.review.invariant_view_points import build_ternary_invariant_points
 from source_extract.review.session_common import _as_wt_list
 from source_extract.review.nodes_attach import _page_to_image_pixel, _stored_to_image_pixel
 
@@ -93,7 +95,9 @@ def _build_binary_view(session: dict[str, Any]) -> dict[str, Any]:
         "components": components,
         "xComponent": axes.x_component,
         "cornersImage": [],
+        # ``points`` = diagram-review name; ``invariants`` = SE React alias
         "points": points,
+        "invariants": points,
         "nodes": [],
         "boundaries": [],
         "isotherms": [],
@@ -117,23 +121,17 @@ def _build_view(session: dict[str, Any]) -> dict[str, Any]:
     stored_origin = session.get("pixelOrigin") or draft.get("digitization", {}).get("storedPixelOrigin") or [0, 0]
     cfg_origin = (float(stored_origin[0]), float(stored_origin[1]))
 
-    points = []
-    for inv in draft.get("invariantPoints", []):
-        wt = [inv["liquid_wt"][c] for c in components]
-        pix = polyline_wt_to_image_pixels([wt], corners=corners, origin=origin, components=components)[0]
-        src = (inv.get("sources") or [{}])[0]
-        points.append(
-            {
-                "id": inv["id"],
-                "kind": "invariant",
-                "temperature_C": inv.get("temperature_C"),
-                "composition": {c: inv["liquid_wt"][c] for c in components},
-                "wt": wt,
-                "pixel": pix,
-                "pagePixel": src.get("pixel"),
-                "provenance": session["provenance"].get("points", {}).get(inv["id"], "auto"),
-            }
-        )
+    def _wt_to_image(wt: list[float]) -> list[float]:
+        return polyline_wt_to_image_pixels(
+            [wt], corners=corners, origin=origin, components=components
+        )[0]
+
+    points = build_ternary_invariant_points(
+        session,
+        components=components,
+        origin=origin,  # type: ignore[arg-type]
+        wt_to_image=_wt_to_image,
+    )
 
     # pd-nodes map (junctions, edges, rings, …) — selectable / deletable points
     # Prefer wt% → draft calibration so nodes stay aligned when they were digitized
@@ -250,19 +248,36 @@ def _build_view(session: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    corners_image = polyline_wt_to_image_pixels(
+        [[100, 0, 0], [0, 100, 0], [0, 0, 100]],
+        corners=corners,
+        origin=origin,
+        components=components,
+    )
+    try:
+        field_regions = build_field_view_regions(
+            corners_image=corners_image,
+            boundaries=boundaries,
+            isotherms=isotherms,
+            phase_names=list(draft.get("phases") or []),
+        )
+    except Exception:  # noqa: BLE001 — field fills are optional; never block the canvas
+        field_regions = [
+            {"name": p, "colorIndex": i, "polygons": [], "centroid": None}
+            for i, p in enumerate(draft.get("phases") or [])
+            if p
+        ]
     return {
         "diagramKind": "ternary",
         "components": components,
-        "cornersImage": polyline_wt_to_image_pixels(
-            [[100, 0, 0], [0, 100, 0], [0, 0, 100]],
-            corners=corners,
-            origin=origin,
-            components=components,
-        ),
+        "cornersImage": corners_image,
+        # ``points`` = diagram-review name; ``invariants`` = SE React alias
         "points": points,
+        "invariants": points,
         "nodes": nodes_view,
         "boundaries": boundaries,
         "isotherms": isotherms,
+        "fields": field_regions,
         "liquidus": [],
     }
 

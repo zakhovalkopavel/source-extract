@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 from source_extract.review.barycentric import image_to_page_pixel, page_pixel_to_wt
-from source_extract.review.retrace import heal_control_wt_order, rebuild_smooth_from_control_wt
+from source_extract.review.retrace import (
+    heal_control_wt_order,
+    polyline_wt_to_image_pixels,
+    rebuild_smooth_from_control_wt,
+)
 from source_extract.review.session_common import ContourKind, _corners_origin
 from source_extract.review.session_persist import _push_undo, save_session
 from source_extract.review.contour_point_helpers import (

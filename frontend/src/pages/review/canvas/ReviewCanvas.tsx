@@ -1,10 +1,29 @@
 import { Box, Typography } from '@mui/material';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { seClient } from '../../../shared/api/se-client';
-import { isPointHit, type Hit, type Point2, type ReviewSession, type ToolMode } from '../types';
+import {
+  isPointHit,
+  type Hit,
+  type Point2,
+  type ReviewSession,
+  type SelectionInfo,
+  type ToolMode,
+} from '../types';
 import { CANVAS_BG, type ViewOpacity } from './curveStyles';
+import { withDraggedPoint } from './dragPreview';
 import { drawSessionView } from './drawView';
 import { hitTestView } from './hitTest';
+import {
+  collectPointsInRect,
+  hitToBatchItem,
+  isDeletablePointHit,
+  marqueeScreenSize,
+  multiKey,
+  nextMultiSelection,
+  type MarqueeBox,
+} from './multiSelect';
+
+const DRAG_THRESHOLD_PX = 4;
 
 type Props = {
   session: ReviewSession;
@@ -12,7 +31,37 @@ type Props = {
   opacity: ViewOpacity;
   onSession: (s: ReviewSession) => void;
   onStatus: (msg: string) => void;
+  onSelectionChange?: (info: SelectionInfo) => void;
+  /** Keep curve highlight after Save when join/remap shifts the index. */
+  externalCurveIndex?: number | null;
+  /** Id / notation for Add invariant (from ToolsRail). */
+  invariantDraftId?: string;
+  /** Select this invariant when chosen from the off-canvas list. */
+  focusInvariantId?: string | null;
+  /** Highlight this field when chosen from the Fields list. */
+  focusFieldName?: string | null;
+  /** Register Delete selected / keyboard handler with the parent. */
+  onRegisterDelete?: (fn: () => void) => void;
+  /** Register Commit seed handler (Enter / ToolsRail button). */
+  onRegisterCommitSeed?: (fn: () => void) => void;
+  /** Field / °C for Seed isotherm (from ToolsRail — no window.prompt). */
+  seedField?: string;
+  seedTemperatureC?: string;
+  /** Live waypoint count for the ToolsRail Commit button. */
+  onSeedCount?: (n: number) => void;
 };
+
+function formatApiError(e: unknown): string {
+  const ax = e as { response?: { data?: { detail?: unknown } }; message?: string };
+  const detail = ax.response?.data?.detail;
+  if (detail == null) return ax.message || String(e);
+  if (typeof detail === 'string') return detail;
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return String(detail);
+  }
+}
 
 function apiPath(url: string | undefined): string | null {
   if (!url) return null;
@@ -23,7 +72,36 @@ function apiPath(url: string | undefined): string | null {
   return url.replace(/^\/+/, '');
 }
 
-export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Props) {
+function hitLabel(hit: Hit, components?: string[]): string {
+  if (hit.kind === 'boundary' || hit.kind === 'isotherm' || hit.kind === 'liquidus') {
+    return `${hit.kind} #${hit.index}${hit.pointIndex != null ? ` pt ${hit.pointIndex}` : ''}`;
+  }
+  if (hit.kind === 'invariant') return `invariant ${hit.id}`;
+  if (hit.kind === 'frame') {
+    const name = components?.[hit.index];
+    return name ? `triangle corner ${name}` : `triangle corner #${hit.index}`;
+  }
+  return `node #${hit.index}`;
+}
+
+export function ReviewCanvas({
+  session,
+  tool,
+  opacity,
+  onSession,
+  onStatus,
+  onSelectionChange,
+  externalCurveIndex = null,
+  invariantDraftId = '',
+  focusInvariantId = null,
+  focusFieldName = null,
+  onRegisterDelete,
+  onRegisterCommitSeed,
+  seedField = '',
+  seedTemperatureC = '1500',
+  onSeedCount,
+}: Props) {
+  const [selectedField, setSelectedField] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [baseImg, setBaseImg] = useState<HTMLImageElement | null>(null);
@@ -32,39 +110,75 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
   const [scale, setScale] = useState(0.4);
   const [offset, setOffset] = useState<Point2>([16, 16]);
   const [selected, setSelected] = useState<Hit | null>(null);
+  const [multi, setMulti] = useState<Hit[]>([]);
+  const [marquee, setMarquee] = useState<MarqueeBox | null>(null);
   const [seed, setSeed] = useState<Point2[]>([]);
-  const drag = useRef<{ hit: Hit; last: Point2 } | null>(null);
+  /** Live image-space position while dragging a vertex / invariant / node. */
+  const [dragPt, setDragPt] = useState<Point2 | null>(null);
+  const drag = useRef<{ hit: Hit; last: Point2; moved: boolean } | null>(null);
+  /** Select-mode: wait for a small pointer move before treating as drag. */
+  const dragCandidate = useRef<{ hit: Hit; screen: Point2 } | null>(null);
   const panDrag = useRef<{ last: Point2 } | null>(null);
+  const marqueeDrag = useRef<MarqueeBox | null>(null);
+  /** Field under a click that may become a marquee — select field only if no drag. */
+  const fieldClickCandidate = useRef<string | null>(null);
   const spaceDown = useRef(false);
   const [panning, setPanning] = useState(false);
   const bust = useRef(0);
   const scaleRef = useRef(scale);
   const offsetRef = useRef(offset);
+  const multiRef = useRef(multi);
+  const selectedRef = useRef(selected);
+  const toolRef = useRef(tool);
+  const sessionRef = useRef(session);
+  const seedFieldRef = useRef(seedField);
+  const seedTempRef = useRef(seedTemperatureC);
   scaleRef.current = scale;
   offsetRef.current = offset;
+  multiRef.current = multi;
+  selectedRef.current = selected;
+  toolRef.current = tool;
+  sessionRef.current = session;
+  seedFieldRef.current = seedField;
+  seedTempRef.current = seedTemperatureC;
 
   const reloadImages = useCallback(() => {
     bust.current += 1;
     const q = `?t=${bust.current}`;
+    const gen = bust.current;
     const basePath = apiPath(session.image?.url) || `review/sessions/${session.id}/image`;
     const livePath =
       apiPath(session.image?.liveOverlayUrl) || `review/sessions/${session.id}/overlay.png`;
     const base = new Image();
     base.crossOrigin = 'anonymous';
-    base.onload = () => setBaseImg(base);
-    base.onerror = () => setBaseImg(null);
+    // Keep the previous scan on failure — never blank the canvas after a move.
+    base.onload = () => {
+      if (bust.current === gen) setBaseImg(base);
+    };
     base.src = `${seClient.defaults.baseURL}/${basePath}${q}`;
-    const live = new Image();
-    live.crossOrigin = 'anonymous';
-    live.onload = () => setLiveImg(live);
-    live.onerror = () => setLiveImg(null);
-    live.src = `${seClient.defaults.baseURL}/${livePath}${q}`;
+    if (opacity.live > 0) {
+      const live = new Image();
+      live.crossOrigin = 'anonymous';
+      live.onload = () => {
+        if (bust.current === gen) setLiveImg(live);
+      };
+      live.onerror = () => {
+        if (bust.current === gen) setLiveImg(null);
+      };
+      live.src = `${seClient.defaults.baseURL}/${livePath}${q}`;
+    } else {
+      setLiveImg(null);
+    }
     const refPath = apiPath(session.image?.referenceOverlayUrl || undefined);
     if (refPath && opacity.reference > 0) {
       const ref = new Image();
       ref.crossOrigin = 'anonymous';
-      ref.onload = () => setRefImg(ref);
-      ref.onerror = () => setRefImg(null);
+      ref.onload = () => {
+        if (bust.current === gen) setRefImg(ref);
+      };
+      ref.onerror = () => {
+        if (bust.current === gen) setRefImg(null);
+      };
       ref.src = `${seClient.defaults.baseURL}/${refPath}${q}`;
     } else {
       setRefImg(null);
@@ -75,11 +189,33 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
     session.image?.liveOverlayUrl,
     session.image?.referenceOverlayUrl,
     opacity.reference,
+    opacity.live,
   ]);
 
+  // Base scan only when session / URLs change — NOT after every view edit (that
+  // raced the save and cleared the background via onerror).
   useEffect(() => {
     reloadImages();
-  }, [reloadImages, session.view]);
+  }, [reloadImages]);
+
+  // Live Pillow overlay (usually opacity 0) — refresh only when the user shows it.
+  useEffect(() => {
+    if (opacity.live <= 0) return;
+    bust.current += 1;
+    const q = `?t=${bust.current}`;
+    const gen = bust.current;
+    const livePath =
+      apiPath(session.image?.liveOverlayUrl) || `review/sessions/${session.id}/overlay.png`;
+    const live = new Image();
+    live.crossOrigin = 'anonymous';
+    live.onload = () => {
+      if (bust.current === gen) setLiveImg(live);
+    };
+    live.onerror = () => {
+      if (bust.current === gen) setLiveImg(null);
+    };
+    live.src = `${seClient.defaults.baseURL}/${livePath}${q}`;
+  }, [session.view, session.id, session.image?.liveOverlayUrl, opacity.live]);
 
   const toImage = useCallback(
     (screen: Point2): Point2 => [(screen[0] - offset[0]) / scale, (screen[1] - offset[1]) / scale],
@@ -117,15 +253,31 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
       ctx.drawImage(refImg, dx, dy);
       ctx.globalAlpha = 1;
     }
-    // Vector overlay on top of (or instead of) live PNG when curves opacity is on
+    const dragHit = drag.current?.hit;
+    const view =
+      dragHit && dragPt && session.view
+        ? withDraggedPoint(session.view, dragHit, dragPt)
+        : session.view;
     drawSessionView(ctx, {
-      view: session.view,
+      view,
       selected,
+      multi,
+      marquee,
       scale,
       showHandles: tool === 'move' || tool === 'add' || tool === 'delete' || tool === 'select',
       seedWaypoints: seed,
       opacity,
+      selectedField,
     });
+    if (dragPt) {
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = '#111';
+      ctx.lineWidth = 1.5 / scale;
+      ctx.beginPath();
+      ctx.arc(dragPt[0], dragPt[1], 5.5 / scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
   }, [
     baseImg,
     liveImg,
@@ -136,14 +288,162 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
     session.image?.pageOrigin,
     session.image?.referencePageOrigin,
     selected,
+    multi,
+    marquee,
     tool,
     seed,
     opacity,
+    dragPt,
+    selectedField,
   ]);
 
   useEffect(() => {
     draw();
   }, [draw]);
+
+  const mutate = useCallback(
+    async (path: string, body?: unknown) => {
+      const res = await seClient.post(
+        `/review/sessions/${sessionRef.current.id}${path}`,
+        body ?? {},
+      );
+      const next = res.data as ReviewSession;
+      onSession(next);
+      return next;
+    },
+    [onSession],
+  );
+
+  const deletePointRefs = useCallback(
+    async (hits: Hit[]) => {
+      const items = hits.map(hitToBatchItem).filter((x): x is NonNullable<typeof x> => x != null);
+      if (!items.length) return;
+      await mutate('/points/delete-batch', { items });
+      setMulti([]);
+      setSelected(null);
+    },
+    [mutate],
+  );
+
+  const confirmDeleteSelection = useCallback(async () => {
+    const hits = multiRef.current;
+    const sel = selectedRef.current;
+    // Prefer multi point selection (nodes / invariants / vertices)
+    if (hits.length) {
+      const n = hits.length;
+      await deletePointRefs(hits);
+      onStatus(`Deleted ${n} selected point(s)`);
+      return;
+    }
+    // Single selected point (invariant / node / vertex) without multi
+    if (sel && isDeletablePointHit(sel)) {
+      await deletePointRefs([sel]);
+      onStatus(`Deleted ${hitLabel(sel)}`);
+      return;
+    }
+    // Whole curve
+    if (sel && (sel.kind === 'boundary' || sel.kind === 'isotherm')) {
+      if (sel.kind === 'boundary') {
+        await mutate('/boundaries/delete', { contourIndex: sel.index });
+      } else {
+        await mutate('/isotherms/delete', { contourIndex: sel.index });
+      }
+      setSelected(null);
+      setMulti([]);
+      onStatus(`Deleted ${sel.kind} #${sel.index}`);
+      return;
+    }
+    onStatus('Nothing selected to delete');
+  }, [deletePointRefs, mutate, onStatus]);
+
+  const confirmDeleteSelectionRef = useRef(confirmDeleteSelection);
+  confirmDeleteSelectionRef.current = confirmDeleteSelection;
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
+
+  useEffect(() => {
+    // Whole-curve selection only — a vertex hit must not look like "curve selected".
+    const curve =
+      selected &&
+      (selected.kind === 'boundary' || selected.kind === 'isotherm') &&
+      selected.pointIndex == null
+        ? { kind: selected.kind, index: selected.index }
+        : null;
+    const invId = selected?.kind === 'invariant' ? selected.id : null;
+    // Only report a field when it is the active selection (avoids sticky highlight flicker).
+    const fieldName = selected?.kind === 'field' ? selected.name : null;
+    const canDelete =
+      multi.length > 0 ||
+      !!curve ||
+      !!invId ||
+      isDeletablePointHit(selected);
+    onSelectionChange?.({
+      pointCount: multi.length,
+      curve,
+      canDelete,
+      invariantId: invId,
+      fieldName,
+    });
+  }, [multi, selected, onSelectionChange]);
+
+  useEffect(() => {
+    if (externalCurveIndex == null || !selected) return;
+    if (selected.kind !== 'boundary' && selected.kind !== 'isotherm') return;
+    if (selected.index === externalCurveIndex) return;
+    setSelected({ kind: selected.kind, index: externalCurveIndex });
+  }, [externalCurveIndex, selected]);
+
+  useEffect(() => {
+    if (!focusInvariantId) return;
+    setSelected((prev) =>
+      prev?.kind === 'invariant' && prev.id === focusInvariantId
+        ? prev
+        : { kind: 'invariant', id: focusInvariantId },
+    );
+    setMulti([{ kind: 'invariant', id: focusInvariantId }]);
+    setSelectedField(null);
+  }, [focusInvariantId]);
+
+  useEffect(() => {
+    if (!focusFieldName) {
+      setSelected((prev) => (prev?.kind === 'field' ? null : prev));
+      setSelectedField(null);
+      return;
+    }
+    setSelected((prev) =>
+      prev?.kind === 'field' && prev.name === focusFieldName
+        ? prev
+        : { kind: 'field', name: focusFieldName },
+    );
+    setSelectedField(focusFieldName);
+    setMulti([]);
+  }, [focusFieldName]);
+
+  useEffect(() => {
+    onRegisterDelete?.(() => {
+      void confirmDeleteSelectionRef.current().catch((e) =>
+        onStatusRef.current(formatApiError(e)),
+      );
+    });
+  }, [onRegisterDelete]);
+
+  useEffect(() => {
+    onSeedCount?.(seed.length);
+  }, [seed.length, onSeedCount]);
+
+  useEffect(() => {
+    if (tool !== 'seed-boundary' && tool !== 'seed-isotherm' && seed.length) {
+      setSeed([]);
+    }
+  }, [tool, seed.length]);
+
+  const commitSeedRef = useRef<() => Promise<void>>(async () => {});
+
+  useEffect(() => {
+    onRegisterCommitSeed?.(() => {
+      void commitSeedRef.current().catch((e) => onStatusRef.current(formatApiError(e)));
+    });
+  }, [onRegisterCommitSeed]);
 
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
@@ -151,7 +451,26 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
         ev.preventDefault();
         spaceDown.current = true;
         setPanning(true);
+        return;
       }
+      const tag = (ev.target as HTMLElement | null)?.tagName;
+      const inField =
+        tag === 'INPUT' || tag === 'TEXTAREA' || (ev.target as HTMLElement)?.isContentEditable;
+      if (
+        (ev.key === 'Enter' || ev.key === 'NumpadEnter') &&
+        !inField &&
+        (toolRef.current === 'seed-boundary' || toolRef.current === 'seed-isotherm')
+      ) {
+        ev.preventDefault();
+        void commitSeedRef.current().catch((e) => onStatusRef.current(formatApiError(e)));
+        return;
+      }
+      if (ev.key !== 'Delete' && ev.key !== 'Backspace') return;
+      if (inField) return;
+      ev.preventDefault();
+      void confirmDeleteSelectionRef.current().catch((e) =>
+        onStatusRef.current(formatApiError(e)),
+      );
     };
     const onKeyUp = (ev: KeyboardEvent) => {
       if (ev.code === 'Space') {
@@ -188,12 +507,6 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
     return () => canvas.removeEventListener('wheel', onWheelNative);
   }, []);
 
-  async function mutate(path: string, body?: unknown) {
-    const res = await seClient.post(`/review/sessions/${session.id}${path}`, body ?? {});
-    onSession(res.data as ReviewSession);
-    onStatus('ok');
-  }
-
   async function persistMove(hit: Hit, imgPt: Point2) {
     if (!isPointHit(hit)) return;
     const pixel = { x: imgPt[0], y: imgPt[1] };
@@ -208,6 +521,11 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
       await mutate('/invariants/move', { pointId: hit.id, pixel });
     } else if (hit.kind === 'node') {
       await mutate('/nodes/move', { nodeIndex: hit.index, pixel });
+    } else if (hit.kind === 'frame') {
+      await mutate('/calibration/corners/move', {
+        componentIndex: hit.index,
+        pixel,
+      });
     }
   }
 
@@ -217,51 +535,177 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
     (ev.target as HTMLElement).setPointerCapture(ev.pointerId);
   }
 
+  function beginMarquee(ev: React.PointerEvent, imgPt: Point2, additive: boolean) {
+    if (!additive) setMulti([]);
+    const box = { x0: imgPt[0], y0: imgPt[1], x1: imgPt[0], y1: imgPt[1] };
+    marqueeDrag.current = box;
+    setMarquee(box);
+    (ev.target as HTMLElement).setPointerCapture(ev.pointerId);
+  }
+
   function onPointerDown(ev: React.PointerEvent) {
     if (ev.button !== 0 && ev.button !== 1) return;
     ev.preventDefault();
     const rect = canvasRef.current!.getBoundingClientRect();
     const screen: Point2 = [ev.clientX - rect.left, ev.clientY - rect.top];
-    const wantPan = ev.button === 1 || spaceDown.current || ev.altKey || ev.shiftKey;
+    // Shift = additive multi-select (diagram-review parity). Pan: middle / Space / Alt.
+    const wantPan = ev.button === 1 || spaceDown.current || ev.altKey;
     if (wantPan) {
       beginPan(ev, screen);
       return;
     }
 
     const imgPt = toImage(screen);
-    // Generous hit radius so curves/points are easy to click (esp. select)
-    const hitTol = Math.max(10, 14 / scale);
-    const hit = hitTestView(session.view, imgPt, hitTol);
-    setSelected(hit);
+    // Select/delete: tight handle radius so curve-body clicks select the whole curve.
+    // Move/add: larger handle radius so vertices are easy to grab.
+    const curveTol = Math.max(10, 14 / scale);
+    const pointTol =
+      tool === 'select' || tool === 'delete'
+        ? Math.max(4, 5.5 / scale)
+        : Math.max(10, 14 / scale);
+    const hit = hitTestView(session.view, imgPt, curveTol, { pointTol });
+    const additive = ev.shiftKey;
 
-    if (tool === 'select') {
-      if (hit) {
-        const label =
-          hit.kind === 'boundary' || hit.kind === 'isotherm' || hit.kind === 'liquidus'
-            ? `${hit.kind} #${hit.index}${hit.pointIndex != null ? ` pt ${hit.pointIndex}` : ''}`
-            : hit.kind === 'invariant'
-              ? `invariant ${hit.id}`
-              : `node #${hit.index}`;
-        onStatus(`Selected ${label}`);
+    if (tool === 'select' || tool === 'delete') {
+      if (hit?.kind === 'frame') {
+        fieldClickCandidate.current = null;
+        setSelected(hit);
+        if (!additive) setMulti([]);
+        if (tool === 'select') {
+          dragCandidate.current = { hit, screen };
+          (ev.target as HTMLElement).setPointerCapture(ev.pointerId);
+          onStatus(
+            `Selected ${hitLabel(hit, session.view?.components)} — drag to move calibration`,
+          );
+        } else {
+          onStatus('Calibration corners cannot be deleted — drag in Select/Move to relocate');
+        }
         return;
       }
-      beginPan(ev, screen);
+      if (isDeletablePointHit(hit)) {
+        fieldClickCandidate.current = null;
+        const next = nextMultiSelection(multi, hit!, additive);
+        setMulti(next);
+        setSelected(hit);
+        setSelectedField(null);
+        if (tool === 'delete' && !additive) {
+          void deletePointRefs([hit!])
+            .then(() => onStatus(`Deleted ${hitLabel(hit!)}`))
+            .catch((e) => onStatus(String(e)));
+          return;
+        }
+        // Select: allow drag-to-move after a small pointer threshold
+        if (tool === 'select' && !additive) {
+          dragCandidate.current = { hit: hit!, screen };
+          (ev.target as HTMLElement).setPointerCapture(ev.pointerId);
+        }
+        onStatus(
+          next.length > 1
+            ? `Selected ${next.length} point(s) — Delete/Backspace to remove`
+            : `Selected ${hitLabel(hit!)} — drag to move, Shift+click to add`,
+        );
+        return;
+      }
+
+      if (hit && (hit.kind === 'boundary' || hit.kind === 'isotherm' || hit.kind === 'liquidus')) {
+        fieldClickCandidate.current = null;
+        const already =
+          selected?.kind === hit.kind &&
+          selected.index === hit.index &&
+          hit.pointIndex == null;
+        if (tool === 'delete' && already && hit.pointIndex == null) {
+          void (async () => {
+            try {
+              if (hit.kind === 'boundary') {
+                await mutate('/boundaries/delete', { contourIndex: hit.index });
+              } else if (hit.kind === 'isotherm') {
+                await mutate('/isotherms/delete', { contourIndex: hit.index });
+              }
+              setSelected(null);
+              setMulti([]);
+              onStatus(`Deleted ${hit.kind} #${hit.index}`);
+            } catch (e) {
+              onStatus(String(e));
+            }
+          })();
+          return;
+        }
+        setSelected(hit);
+        setSelectedField(null);
+        if (!additive) setMulti([]);
+        onStatus(
+          tool === 'delete'
+            ? `Selected ${hitLabel(hit)} — click again to delete curve`
+            : `Selected ${hitLabel(hit)} — drag a handle to move`,
+        );
+        return;
+      }
+
+      if (hit?.kind === 'field') {
+        // Field fills cover the triangle — don't steal marquee / multi-select.
+        // Click (no drag) selects the field; drag selects points inside it.
+        fieldClickCandidate.current = hit.name;
+        beginMarquee(ev, imgPt, additive);
+        onStatus(
+          additive
+            ? 'Drag to add points — click (no drag) selects the field'
+            : 'Drag to select points — click (no drag) selects the field',
+        );
+        return;
+      }
+
+      // Empty space → marquee (not pan) in select/delete
+      fieldClickCandidate.current = null;
+      beginMarquee(ev, imgPt, additive);
+      onStatus('Drag to select points — Space/Alt/middle-drag to pan');
       return;
     }
 
-    // Move: drag a point handle; click curve body → select only; empty → pan
-    if (tool === 'move') {
-      if (isPointHit(hit)) {
-        drag.current = { hit: hit!, last: imgPt };
-        (ev.target as HTMLElement).setPointerCapture(ev.pointerId);
+    // Add point: uses the already-selected curve (click does not need to re-hit it).
+    if (tool === 'add') {
+      const target =
+        selected &&
+        (selected.kind === 'boundary' || selected.kind === 'isotherm')
+          ? selected
+          : hit && (hit.kind === 'boundary' || hit.kind === 'isotherm')
+            ? hit
+            : null;
+      if (!target) {
+        onStatus('Select an isotherm or boundary first, then Add point');
         return;
       }
-      if (hit) {
-        onStatus(`Selected ${hit.kind} — use a handle to move`);
+      const kind = target.kind as 'boundary' | 'isotherm';
+      const index = target.index;
+      setSelected({ kind, index });
+      void mutate('/points/add', {
+        contourKind: kind,
+        contourIndex: index,
+        pixel: { x: imgPt[0], y: imgPt[1] },
+      })
+        .then(() => {
+          setSelected({ kind, index });
+          onStatus(`Added point on ${kind} #${index} — Undo available`);
+        })
+        .catch((e) => onStatus(String(e)));
+      return;
+    }
+
+    setSelected(hit);
+
+    if (tool === 'move') {
+      if (isPointHit(hit)) {
+        drag.current = { hit: hit!, last: imgPt, moved: false };
+        setDragPt(imgPt);
+        (ev.target as HTMLElement).setPointerCapture(ev.pointerId);
+        onStatus(`Moving ${hitLabel(hit!)}`);
+        return;
+      }
+      if (hit && (hit.kind === 'boundary' || hit.kind === 'isotherm' || hit.kind === 'liquidus')) {
+        onStatus(`Selected ${hitLabel(hit)} — drag a handle to move vertices`);
         return;
       }
       beginPan(ev, screen);
-      onStatus('Panning — drop on a point to move it');
+      onStatus('Panning — drop on a handle / point to move it');
       return;
     }
 
@@ -269,37 +713,31 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
       setSeed((s) => [...s, imgPt]);
       return;
     }
-    if (tool === 'add-invariant' && !hit) {
-      const id = window.prompt('Invariant id');
-      if (!id) return;
+    if (tool === 'add-invariant') {
+      const id = invariantDraftId.trim();
+      if (!id) {
+        onStatus('Enter invariant id / notation (e.g. A3S2) in the Tools panel first');
+        return;
+      }
       void mutate('/invariants', {
         pointId: id,
         pixel: { x: imgPt[0], y: imgPt[1] },
-      }).catch((e) => onStatus(String(e)));
-      return;
-    }
-    if (tool === 'delete' && hit) {
-      void (async () => {
-        try {
-          if ((hit.kind === 'boundary' || hit.kind === 'isotherm') && hit.pointIndex != null) {
-            await mutate('/points/delete', {
-              contourKind: hit.kind,
-              contourIndex: hit.index,
-              pointIndex: hit.pointIndex,
-            });
-          } else if (hit.kind === 'boundary') {
-            await mutate('/boundaries/delete', { contourIndex: hit.index });
-          } else if (hit.kind === 'isotherm') {
-            await mutate('/isotherms/delete', { contourIndex: hit.index });
-          } else if (hit.kind === 'invariant') {
-            await seClient.delete(`/review/sessions/${session.id}/invariants/${encodeURIComponent(hit.id)}`);
-            const again = await seClient.get(`/review/sessions/${session.id}`);
-            onSession(again.data as ReviewSession);
+      })
+        .then((next) => {
+          setSelected({ kind: 'invariant', id });
+          setMulti([{ kind: 'invariant', id }]);
+          const look = next.lastInvariantLookup;
+          if (look?.resolved && look.temperature_C != null) {
+            onStatus(
+              `Placed ${id} → ${look.compoundId || look.notation} @ ${look.temperature_C}°C`,
+            );
+          } else if (look?.resolved) {
+            onStatus(`Placed ${id} → ${look.compoundId || 'compound'} (no melting °C in compounds.json)`);
+          } else {
+            onStatus(`Placed ${id} (no compounds.json match — set °C manually if needed)`);
           }
-        } catch (e) {
-          onStatus(String(e));
-        }
-      })();
+        })
+        .catch((e) => onStatus(String(e)));
       return;
     }
     if (tool === 'arrows' && hit?.kind === 'boundary') {
@@ -309,15 +747,6 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
       }).catch((e) => onStatus(String(e)));
       return;
     }
-    if (tool === 'add' && hit && (hit.kind === 'boundary' || hit.kind === 'isotherm')) {
-      void mutate('/points/add', {
-        contourKind: hit.kind,
-        contourIndex: hit.index,
-        pixel: { x: imgPt[0], y: imgPt[1] },
-      }).catch((e) => onStatus(String(e)));
-      return;
-    }
-    // Empty drag on other tools → pan
     if (!hit) beginPan(ev, screen);
   }
 
@@ -330,8 +759,33 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
       panDrag.current = { last: screen };
       return;
     }
+    if (marqueeDrag.current) {
+      const imgPt = toImage(screen);
+      const box = {
+        ...marqueeDrag.current,
+        x1: imgPt[0],
+        y1: imgPt[1],
+      };
+      marqueeDrag.current = box;
+      setMarquee(box);
+      return;
+    }
+    // Select: promote click → drag once the pointer moves enough
+    if (dragCandidate.current && !drag.current) {
+      const [sx, sy] = dragCandidate.current.screen;
+      if (Math.hypot(screen[0] - sx, screen[1] - sy) >= DRAG_THRESHOLD_PX) {
+        const imgPt = toImage(screen);
+        drag.current = { hit: dragCandidate.current.hit, last: imgPt, moved: true };
+        dragCandidate.current = null;
+        setDragPt(imgPt);
+        onStatus(`Moving ${hitLabel(drag.current.hit)}`);
+      }
+      return;
+    }
     if (!drag.current) return;
-    drag.current = { ...drag.current, last: toImage(screen) };
+    const imgPt = toImage(screen);
+    drag.current = { ...drag.current, last: imgPt, moved: true };
+    setDragPt(imgPt);
   }
 
   async function onPointerUp(ev: React.PointerEvent) {
@@ -345,47 +799,166 @@ export function ReviewCanvas({ session, tool, opacity, onSession, onStatus }: Pr
       }
       return;
     }
+    if (marqueeDrag.current) {
+      const box = marqueeDrag.current;
+      marqueeDrag.current = null;
+      setMarquee(null);
+      try {
+        (ev.target as HTMLElement).releasePointerCapture(ev.pointerId);
+      } catch {
+        /* not captured */
+      }
+      const [sw, sh] = marqueeScreenSize(box, scaleRef.current);
+      const fieldName = fieldClickCandidate.current;
+      fieldClickCandidate.current = null;
+      if (sw < 6 && sh < 6) {
+        // Click without drag on a field → select that field (list click still works too).
+        if (
+          fieldName &&
+          !ev.shiftKey &&
+          (toolRef.current === 'select' || toolRef.current === 'delete')
+        ) {
+          setMulti([]);
+          setSelected({ kind: 'field', name: fieldName });
+          setSelectedField(fieldName);
+          onSelectionChange?.({
+            pointCount: 0,
+            curve: null,
+            canDelete: false,
+            invariantId: null,
+            fieldName,
+          });
+          onStatus(`Selected field ${fieldName}`);
+          return;
+        }
+        if (!ev.shiftKey && (toolRef.current === 'select' || toolRef.current === 'delete')) {
+          setMulti([]);
+          setSelected(null);
+          setSelectedField(null);
+        }
+        return;
+      }
+      const refs = collectPointsInRect(
+        sessionRef.current.view,
+        box.x0,
+        box.y0,
+        box.x1,
+        box.y1,
+        selectedRef.current,
+      );
+      setMulti((prev) => {
+        if (!ev.shiftKey) return refs;
+        const seen = new Set(prev.map(multiKey));
+        const merged = [...prev];
+        for (const r of refs) {
+          const k = multiKey(r);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          merged.push(r);
+        }
+        return merged;
+      });
+      setSelected(null);
+      setSelectedField(null);
+      onStatus(
+        refs.length
+          ? `Selected ${refs.length} point(s) — Delete/Backspace to remove`
+          : 'No points in rectangle',
+      );
+      return;
+    }
+    dragCandidate.current = null;
     if (!drag.current) return;
-    const { hit, last } = drag.current;
+    const { hit, last, moved } = drag.current;
     drag.current = null;
+    setDragPt(null);
     try {
       (ev.target as HTMLElement).releasePointerCapture(ev.pointerId);
     } catch {
       /* not captured */
     }
+    if (!moved) return;
     try {
       await persistMove(hit, last);
+      onStatus(`Moved ${hitLabel(hit)}`);
     } catch (e) {
       onStatus(String(e));
     }
   }
 
-  async function commitSeed() {
-    if (seed.length < 2) {
-      onStatus('Need ≥2 seed waypoints');
+  const commitSeed = useCallback(async () => {
+    const waypoints = seed;
+    const mode = toolRef.current;
+    if (mode !== 'seed-boundary' && mode !== 'seed-isotherm') return;
+    if (waypoints.length < 2) {
+      onStatus('Need ≥2 seed waypoints — click the diagram, then Commit / Enter');
       return;
     }
     try {
-      if (tool === 'seed-boundary') {
+      if (mode === 'seed-boundary') {
         await mutate('/boundaries', {
-          waypoints: seed.map(([x, y]) => ({ x, y })),
+          waypoints: waypoints.map(([x, y]) => ({ x, y })),
         });
-      } else {
-        const field = window.prompt('Field name', session.phases?.[0] || '') || '';
-        const t = Number(window.prompt('Temperature °C', '1500') || '1500');
-        await mutate('/isotherms', {
-          field,
-          temperature_C: t,
-          waypoints: seed.map(([x, y]) => ({ x, y })),
+        setSeed([]);
+        // Commit = finished — deselect so the next seed can start immediately.
+        setSelected(null);
+        setMulti([]);
+        setSelectedField(null);
+        onSelectionChange?.({
+          pointCount: 0,
+          curve: null,
+          canDelete: false,
+          invariantId: null,
+          fieldName: null,
         });
+        onStatus(`Seeded boundary (${waypoints.length} waypoints) — Undo available`);
+        return;
       }
+      const field =
+        seedFieldRef.current.trim() ||
+        sessionRef.current.phases?.[0] ||
+        '';
+      const t = Number(seedTempRef.current);
+      if (!Number.isFinite(t)) {
+        onStatus('Set a valid Temperature °C in the Tools panel before committing');
+        return;
+      }
+      if (!field) {
+        onStatus('Set Field name in the Tools panel before committing');
+        return;
+      }
+      const next = await mutate('/isotherms', {
+        field,
+        temperature_C: t,
+        waypoints: waypoints.map(([x, y]) => ({ x, y })),
+      });
       setSeed([]);
+      const build = next.lastIsothermBuild;
+      const idx = build?.index;
+      const removed = build?.removedCount || 0;
+      setSelected(null);
+      setMulti([]);
+      setSelectedField(null);
+      onSelectionChange?.({
+        pointCount: 0,
+        curve: null,
+        canDelete: false,
+        invariantId: null,
+        fieldName: null,
+      });
+      onStatus(
+        `Saved isotherm ${field} @ ${t}°C` +
+          (idx != null ? ` (#${idx})` : '') +
+          (removed > 0 ? ` — removed ${removed} crossed` : '') +
+          ' — click it later to edit',
+      );
     } catch (e) {
-      onStatus(String(e));
+      onStatus(`Seed failed: ${formatApiError(e)}`);
     }
-  }
+  }, [seed, mutate, onStatus, onSelectionChange]);
 
-  // Expose seed commit via double-click
+  commitSeedRef.current = commitSeed;
+
   function onDoubleClick() {
     if (tool === 'seed-boundary' || tool === 'seed-isotherm') void commitSeed();
   }

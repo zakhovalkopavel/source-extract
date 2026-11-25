@@ -22,7 +22,10 @@ def save_session(session: dict[str, Any]) -> None:
     session["updatedAt"] = _now()
     session["view"] = _build_view(session)
     path = session_path(session["id"])
-    path.write_text(json.dumps(session, indent=2), encoding="utf-8")
+    # Atomic replace — concurrent image/overlay GETs must not read a half-written JSON.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(session, indent=2), encoding="utf-8")
+    tmp.replace(path)
     _persist_live_overlay(session)
 
 

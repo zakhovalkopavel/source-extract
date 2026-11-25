@@ -115,6 +115,13 @@ class MoveNodeBody(BaseModel):
     pixel: PixelBody
 
 
+class MoveCalibrationCornerBody(BaseModel):
+    """``componentIndex`` matches ``view.components`` / ``view.cornersImage`` order."""
+
+    componentIndex: int
+    pixel: PixelBody
+
+
 class AddInvariantBody(BaseModel):
     pointId: str
     pixel: PixelBody

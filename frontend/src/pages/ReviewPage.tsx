@@ -7,13 +7,13 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { seClient } from '../shared/api/se-client';
 import { DEFAULT_VIEW_OPACITY, type ViewOpacity } from './review/canvas/curveStyles';
 import { ReviewCanvas } from './review/canvas/ReviewCanvas';
 import { JobOverlay } from './review/JobOverlay';
 import { ToolsRail } from './review/ToolsRail';
-import type { ReviewSession, ToolMode } from './review/types';
+import type { ReviewSession, SelectedCurve, ToolMode } from './review/types';
 
 type SystemRow = {
   id: string;
@@ -50,6 +50,80 @@ export function ReviewPage() {
   const [jobOpen, setJobOpen] = useState(false);
   const [jobTitle, setJobTitle] = useState('');
   const [jobLog, setJobLog] = useState<string[]>([]);
+  const [selectionCount, setSelectionCount] = useState(0);
+  const [canDelete, setCanDelete] = useState(false);
+  const [selectedCurve, setSelectedCurve] = useState<SelectedCurve | null>(null);
+  const [externalCurveIndex, setExternalCurveIndex] = useState<number | null>(null);
+  const [invariantId, setInvariantId] = useState('');
+  const [focusInvariantId, setFocusInvariantId] = useState<string | null>(null);
+  const [focusFieldName, setFocusFieldName] = useState<string | null>(null);
+  const [seedCount, setSeedCount] = useState(0);
+  const [seedField, setSeedField] = useState('');
+  const [seedTemperatureC, setSeedTemperatureC] = useState('1500');
+  const deleteFnRef = useRef<() => void>(() => {});
+  const commitSeedFnRef = useRef<() => void>(() => {});
+
+  const registerDelete = useCallback((fn: () => void) => {
+    deleteFnRef.current = fn;
+  }, []);
+
+  const registerCommitSeed = useCallback((fn: () => void) => {
+    commitSeedFnRef.current = fn;
+  }, []);
+
+  function requestDeleteSelection() {
+    deleteFnRef.current();
+  }
+
+  function requestCommitSeed() {
+    commitSeedFnRef.current();
+  }
+
+  const handleSelectionChange = useCallback(
+    (info: {
+      pointCount: number;
+      curve: SelectedCurve | null;
+      canDelete: boolean;
+      invariantId?: string | null;
+      fieldName?: string | null;
+    }) => {
+      setSelectionCount(info.pointCount);
+      setCanDelete(info.canDelete);
+      setSelectedCurve((prev) => {
+        const next = info.curve;
+        if (!prev && !next) return prev;
+        if (prev && next && prev.kind === next.kind && prev.index === next.index) {
+          return prev;
+        }
+        return next;
+      });
+      if (info.invariantId) {
+        setFocusInvariantId(info.invariantId);
+        setFocusFieldName(null);
+        return;
+      }
+      if (info.fieldName) {
+        setFocusFieldName(info.fieldName);
+        setFocusInvariantId(null);
+        return;
+      }
+      setFocusFieldName(null);
+      if (info.curve || info.pointCount > 0) {
+        setFocusInvariantId(null);
+      }
+    },
+    [],
+  );
+
+  function handleTool(next: ToolMode) {
+    // Clicking Delete tool with a selection removes it (diagram-review parity).
+    if (next === 'delete' && canDelete) {
+      requestDeleteSelection();
+      setTool('delete');
+      return;
+    }
+    setTool(next);
+  }
 
   const systems = useQuery({
     queryKey: ['systems', ADAPTER_ID],
@@ -94,6 +168,8 @@ export function ReviewPage() {
     },
     onSuccess: (s) => {
       setSession(s);
+      setSeedField((prev) => prev || s.phases?.[0] || '');
+      setSeedCount(0);
       setStatus(`Opened ${s.systemId}`);
       void qc.invalidateQueries({ queryKey: ['review-sessions'] });
     },
@@ -105,6 +181,8 @@ export function ReviewPage() {
       (await seClient.get(`/review/sessions/${id}`)).data as ReviewSession,
     onSuccess: (s) => {
       setSession(s);
+      setSeedField((prev) => prev || s.phases?.[0] || '');
+      setSeedCount(0);
       setStatus(`Resumed ${s.systemId}`);
     },
   });
@@ -269,10 +347,44 @@ export function ReviewPage() {
               opacity={opacity}
               onSession={setSession}
               onStatus={setStatus}
+              externalCurveIndex={externalCurveIndex}
+              invariantDraftId={invariantId}
+              focusInvariantId={focusInvariantId}
+              focusFieldName={focusFieldName}
+              onRegisterDelete={registerDelete}
+              onRegisterCommitSeed={registerCommitSeed}
+              seedField={seedField}
+              seedTemperatureC={seedTemperatureC}
+              onSeedCount={setSeedCount}
+              onSelectionChange={handleSelectionChange}
             />
             <ToolsRail
               tool={tool}
-              onTool={setTool}
+              onTool={handleTool}
+              onDeleteSelection={requestDeleteSelection}
+              selectionCount={selectionCount}
+              canDelete={canDelete}
+              selectedCurve={selectedCurve}
+              onCurveIndexChange={(index) => {
+                setSelectedCurve((prev) => (prev ? { ...prev, index } : null));
+                setExternalCurveIndex(index);
+              }}
+              invariantId={invariantId}
+              onInvariantId={setInvariantId}
+              selectedInvariantId={focusInvariantId}
+              onSelectInvariant={(id) => {
+                setFocusInvariantId(id);
+                setFocusFieldName(null);
+                setTool('select');
+              }}
+              selectedField={focusFieldName}
+              onSelectField={(name) => {
+                setFocusFieldName(name);
+                setFocusInvariantId(null);
+                setTool('select');
+              }}
+              onSession={setSession}
+              onStatus={setStatus}
               session={session}
               busy={openSystem.isPending}
               opacity={opacity}
@@ -282,6 +394,38 @@ export function ReviewPage() {
                 setSession(res.data as ReviewSession);
               }}
               onAnalyze={() => void runAnalyze()}
+              onRepositionInvariants={async () => {
+                const res = await seClient.post(
+                  `/review/sessions/${session.id}/invariants/reposition`,
+                );
+                const next = res.data as ReviewSession;
+                setSession(next);
+                const n = next.lastInvariantReposition?.count;
+                setStatus(
+                  n != null
+                    ? `Repositioned ${n} invariant(s) from composition (inside triangle)`
+                    : 'Invariants repositioned from composition',
+                );
+              }}
+              onRestoreInvariants={async () => {
+                const res = await seClient.post(
+                  `/review/sessions/${session.id}/invariants/restore`,
+                );
+                const next = res.data as ReviewSession;
+                setSession(next);
+                const r = next.lastInvariantRestore;
+                setStatus(
+                  r
+                    ? `Restored invariants from ${r.draftSource}: +${r.added} added, ${r.filledTemperature} °C filled, ${r.nodeCount} nodes (total ${r.total})`
+                    : 'Invariants restored from disk draft',
+                );
+              }}
+              seedCount={seedCount}
+              seedField={seedField}
+              onSeedField={setSeedField}
+              seedTemperatureC={seedTemperatureC}
+              onSeedTemperatureC={setSeedTemperatureC}
+              onCommitSeed={requestCommitSeed}
               onConfirm={async () => {
                 const res = await seClient.post(`/review/sessions/${session.id}/confirm`);
                 const data = res.data as { session?: ReviewSession };
