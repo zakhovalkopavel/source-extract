@@ -1,0 +1,23 @@
+# Local SE stack (optional). Host thermal-software compose.yml is the primary wiring.
+services:
+  source-extractor:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8100:8100"
+    environment:
+      SE_ADAPTER_MODULES: ${SE_ADAPTER_MODULES:-}
+      SE_WORK_ROOT: /data/work
+      SE_DATASET_ROOT: /data/dataset
+      SE_HISTORY_ROOT: /data/history
+      SE_LLM_PROVIDER: ${SE_LLM_PROVIDER:-google}
+      SE_LLM_MODEL: ${SE_LLM_MODEL:-}
+      SE_LLM_API_KEY: ${SE_LLM_API_KEY:-}
+    volumes:
+      - se_work:/data/work
+      - se_history:/data/history
+
+volumes:
+  se_work:
+  se_history:

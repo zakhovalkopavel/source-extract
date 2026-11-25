@@ -1,45 +1,50 @@
 # source-extract
 
-**One library:** take a **source** (tabular handbooks, diagram figures, or mixed papers) and **save structured results**.
+**One library + single entry point:** take a **source** (tabular handbooks, diagram figures, or mixed papers) and **save structured results** — via console CLI, REST API (Swagger), and React GUI.
 
-| Subpackage | Role |
+| Surface | Entry |
 | --- | --- |
-| `source_extract.tables` | Tabular extract: columns/units, dataset shape, export, verify |
-| `source_extract.diagrams` | Figure/diagram CV (detect, trace, calibrate, overlay) |
-| `source_extract.papers` | Mixed scientific papers (scaffold) |
-| `source_extract.pipeline` | High-level `extract_and_save(ExtractRequest)` |
+| Library | `source_extract.tables` / `.diagrams` / `.papers` / `.pipeline` |
+| CLI | `source-extract …` or `python -m source_extract.cli` |
+| API | FastAPI `/api/v1`, docs at `/docs` |
+| GUI | `frontend/` (React 19 + MUI + Vite) |
 
-Depends on **`page-ocr`** for recognition (local or Modal). Provision OCR first (`vendor/page-ocr/install.sh --all` or `python -m page_ocr install --all`), then `pip install -e .` here. Sources may be **PDF**, **DjVu**, or a **raster image** (PNG/JPEG/…); examples below use PDF.
+Host apps keep **source adapters** only (paths, catalogs, quirks). SE discovers them through entry points (`source_extract.adapters`) and/or `SE_ADAPTER_MODULES`.
 
-Host apps keep **source-specific** catalogs, refs, column schemas, and cross-checks; this package is generic extract (shape / CV / export / verify).
-
-## Example (tables)
-
-```python
-from source_extract import ExtractRequest, extract_and_save
-
-result = extract_and_save(
-    ExtractRequest(
-        kind="table",
-        source_path="…/handbook.pdf",
-        out_dir="…/processed/handbook",
-        ref_key="HandbookRef",
-        parsed_table=parsed,  # from the host’s page parser
-        page_offset=0,
-        debug_dir="…/debug",
-    )
-)
-assert result.verify_ok
-```
+Depends on **`page-ocr`** for recognition (local or Modal).
 
 ## Layout
 
 ```text
 src/source_extract/
-  pipeline.py
-  tables/
-  diagrams/
-  papers/
+  adapters/     SourceAdapter protocol + registry
+  commands/     CommandSpec catalog
+  params/       ParamSpec + validation
+  jobs/         async job runner
+  models/       LLM + OCR
+  assist/       assistant tools
+  review/       review sessions (spine)
+  versioning/   current/history + manifests
+  api/          FastAPI
+  cli/          console entry
+  diagrams/ tables/ papers/ pipeline.py
+frontend/       React GUI
+docker/         SE-local Dockerfile + compose
+```
+
+## Quick start (inside thermal-software compose)
+
+```bash
+docker compose up -d source-extractor source-extractor-ui
+curl -s http://localhost/source-extractor/api/v1/health
+docker compose run --rm --no-deps source-extractor python -m source_extract.cli --help
+```
+
+## Tests
+
+```bash
+docker compose run --rm --no-deps source-extractor \
+  bash -c "pip install -q pytest httpx && pip install -q -e /app/vendor/source-extract && pytest /app/vendor/source-extract/tests -q"
 ```
 
 This directory is its **own git repository** (submodule path `vendor/source-extract`).
