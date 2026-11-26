@@ -49,6 +49,7 @@ def add_boundary(
             session["draft"]["phases"].append(name)
     idx = len(session["draft"]["boundaryCurves"]) - 1
     session["provenance"]["boundaries"][str(idx)] = "user"
+    session["_lastBoundaryBuild"] = {"index": idx}
     save_session(session)
     return session
 

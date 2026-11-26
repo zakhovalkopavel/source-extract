@@ -343,7 +343,7 @@ def add_invariant(session_id: str, body: AddInvariantBody) -> dict[str, Any]:
         return _ok(
             S.add_invariant(
                 _load(session_id),
-                point_id=body.pointId,
+                point_id=body.pointId or "",
                 image_pixel=[body.pixel.x, body.pixel.y],
                 temperature_C=body.temperature_C,
                 phases=body.phases,
@@ -368,6 +368,7 @@ def update_invariant(session_id: str, point_id: str, body: UpdateInvariantBody) 
                 reaction=patch.get("reaction"),
                 new_id=patch.get("newId"),
                 set_temperature="temperature_C" in patch,
+                point_role=patch.get("pointRole"),
             )
         )
     except (KeyError, ValueError) as exc:

@@ -258,11 +258,16 @@ def add_invariant(
 
     Saved immediately on place — no separate Save step.
     """
+    invs = session["draft"].setdefault("invariantPoints", [])
     pid = str(point_id or "").strip()
     if not pid:
-        raise ValueError("Invariant id is required")
-    invs = session["draft"].setdefault("invariantPoints", [])
-    if any(p.get("id") == pid for p in invs):
+        # Place-first UX: create a provisional id; user renames in the edit panel.
+        n = 1
+        existing = {str(p.get("id") or "") for p in invs}
+        while f"pt-{n}" in existing:
+            n += 1
+        pid = f"pt-{n}"
+    elif any(p.get("id") == pid for p in invs):
         raise ValueError(f"Invariant '{pid}' already exists")
     from source_extract.review.invariant_compound_lookup import enrich_invariant_from_tag
 
@@ -348,8 +353,9 @@ def update_invariant(
     reaction: str | None = None,
     new_id: str | None = None,
     set_temperature: bool = False,
+    point_role: str | None = None,
 ) -> dict[str, Any]:
-    """Update metadata on an existing invariant (temperature / id / phases).
+    """Update metadata on an existing invariant (temperature / id / phases / type).
 
     Pass ``set_temperature=True`` to apply ``temperature_C`` even when it is ``None``
     (clears °C). When ``set_temperature`` is false, temperature is left unchanged.
@@ -385,12 +391,15 @@ def update_invariant(
     if reaction is not None:
         inv["reaction"] = reaction or None
     src0 = (inv.get("sources") or [{}])[0]
-    # Special name / compounds.json match → compound point; else generic invariant.
-    inv["pointRole"] = _point_role(
-        point_id=str(inv["id"]),
-        notation=inv.get("notation") or src0.get("notation"),
-        compound_id=src0.get("compoundId"),
-    )
+    if point_role in ("compound", "invariant"):
+        inv["pointRole"] = point_role
+    else:
+        # Infer from name / compounds.json when the user did not set a type.
+        inv["pointRole"] = _point_role(
+            point_id=str(inv["id"]),
+            notation=inv.get("notation") or src0.get("notation"),
+            compound_id=src0.get("compoundId"),
+        )
     if inv["pointRole"] == "compound" and inv.get("reaction") in (None, "", "unknown"):
         inv["reaction"] = "compound"
     session["provenance"].setdefault("points", {})[str(inv["id"])] = "user"

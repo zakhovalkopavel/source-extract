@@ -138,19 +138,26 @@ export function hitTestView(
   }
   if (bestPoint) return bestPoint.hit;
 
-  // Curve body (select / highlight / avoid accidental pan)
+  // Curve body (select / highlight / avoid accidental pan).
+  // Prefer closer geometry; on a near-tie prefer later curves (drawn on top).
   let bestCurve: { hit: Hit; d: number } | null = null;
+  const consider = (h: { hit: Hit; d: number } | null) => {
+    if (!h) return;
+    if (!bestCurve || h.d < bestCurve.d - 0.25) {
+      bestCurve = h;
+      return;
+    }
+    // Within 0.25 px → later candidate wins (matches paint order).
+    if (h.d <= bestCurve.d + 0.25) bestCurve = h;
+  };
   for (const iso of view.isotherms || []) {
-    const h = hitPolylineBody('isotherm', iso.index, iso.pixels || [], imgPt, curveTol);
-    if (h && (!bestCurve || h.d < bestCurve.d)) bestCurve = h;
+    consider(hitPolylineBody('isotherm', iso.index, iso.pixels || [], imgPt, curveTol));
   }
   for (const b of view.boundaries || []) {
-    const h = hitPolylineBody('boundary', b.index, b.pixels || [], imgPt, curveTol);
-    if (h && (!bestCurve || h.d < bestCurve.d)) bestCurve = h;
+    consider(hitPolylineBody('boundary', b.index, b.pixels || [], imgPt, curveTol));
   }
   for (const liq of view.liquidus || []) {
-    const h = hitPolylineBody('liquidus', liq.index, liq.pixels || [], imgPt, curveTol);
-    if (h && (!bestCurve || h.d < bestCurve.d)) bestCurve = h;
+    consider(hitPolylineBody('liquidus', liq.index, liq.pixels || [], imgPt, curveTol));
   }
   if (bestCurve) return bestCurve.hit;
 

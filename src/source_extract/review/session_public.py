@@ -127,6 +127,7 @@ def public_session(session: dict[str, Any]) -> dict[str, Any]:
         "view": _build_view(session),
         "nodeCount": len(session.get("nodes") or []),
         "lastIsothermBuild": session.pop("_lastIsothermBuild", None),
+        "lastBoundaryBuild": session.pop("_lastBoundaryBuild", None),
         "lastMoveNote": session.pop("_lastMoveNote", None),
         "lastRemap": session.pop("_lastRemap", None),
         "lastTemperaturePropagate": session.pop("_lastTemperaturePropagate", None),

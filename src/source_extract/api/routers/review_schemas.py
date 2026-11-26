@@ -139,7 +139,9 @@ class MoveCalibrationCornerBody(BaseModel):
 
 
 class AddInvariantBody(BaseModel):
-    pointId: str
+    """``pointId`` optional — empty places a provisional ``pt-N`` for rename-after-click."""
+
+    pointId: str | None = None
     pixel: PixelBody
     temperature_C: float | None = None
     phases: list[str] | None = None
@@ -151,6 +153,8 @@ class UpdateInvariantBody(BaseModel):
     phases: list[str] | None = None
     reaction: str | None = None
     newId: str | None = None
+    # compound | invariant — user-selected point type after place.
+    pointRole: Literal["compound", "invariant"] | None = None
 
 
 class RemapContourBody(BaseModel):

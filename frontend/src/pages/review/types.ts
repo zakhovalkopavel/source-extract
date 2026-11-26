@@ -4,9 +4,19 @@ export type ToolMode =
   | 'add'
   | 'delete'
   | 'arrows'
+  | 'seed'
   | 'seed-boundary'
   | 'seed-isotherm'
   | 'add-invariant';
+
+/** Map UI tool → canvas tool (unified Seed → boundary/isotherm). */
+export function resolveCanvasTool(
+  tool: ToolMode,
+  seedKind: 'boundary' | 'isotherm' = 'boundary',
+): ToolMode {
+  if (tool === 'seed') return seedKind === 'isotherm' ? 'seed-isotherm' : 'seed-boundary';
+  return tool;
+}
 
 export type Point2 = [number, number];
 
@@ -111,6 +121,7 @@ export type ReviewSession = {
   guidance?: { cards?: Array<Record<string, unknown>>; answers?: unknown[] };
   lastMoveNote?: unknown;
   lastIsothermBuild?: { index?: number; removedCount?: number; removedCrossed?: number[] };
+  lastBoundaryBuild?: { index?: number };
   lastIsothermJoin?: { joined?: boolean; mergedCount?: number; closed?: boolean; index?: number };
   lastTemperaturePropagate?: { corrected?: unknown[]; reason?: string };
   lastInvariantLookup?: {

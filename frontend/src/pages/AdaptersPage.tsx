@@ -13,7 +13,11 @@ export function AdaptersPage() {
 
   return (
     <Stack spacing={2}>
-      <Typography variant="h5">Adapters</Typography>
+      <Typography variant="h5">Sources</Typography>
+      <Typography variant="body2" color="text.secondary">
+        Choose or register a source adapter (phase diagrams, papers, …). Then open Diagrams to
+        edit and accept.
+      </Typography>
       {(data || []).map((row) => (
         <Stack key={String(row.id)} spacing={0.5} sx={{ borderBottom: '1px solid #ddd', pb: 1 }}>
           <Typography fontWeight={600}>

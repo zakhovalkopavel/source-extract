@@ -12,6 +12,9 @@ type Props = {
   onSession: (s: ReviewSession) => void;
   onStatus: (msg: string) => void;
   onSelectedIndex?: (index: number) => void;
+  onCancel?: () => void;
+  /** Remove the whole selected curve (not a single vertex). */
+  onDelete?: () => void;
 };
 
 export function CurveEditPanel({
@@ -21,6 +24,8 @@ export function CurveEditPanel({
   onSession,
   onStatus,
   onSelectedIndex,
+  onCancel,
+  onDelete,
 }: Props) {
   const [temp, setTemp] = useState('');
   const [field, setField] = useState('');
@@ -175,14 +180,38 @@ export function CurveEditPanel({
           Boundary not in view
         </Typography>
       )}
-      <Button
-        variant="contained"
-        size="small"
-        disabled={busy || saving}
-        onClick={() => void save()}
-      >
-        Save curve
-      </Button>
+      <Stack direction="row" spacing={1}>
+        <Button
+          variant="contained"
+          size="small"
+          disabled={busy || saving}
+          onClick={() => void save()}
+          sx={{ textTransform: 'none' }}
+        >
+          Save
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          disabled={busy || saving}
+          onClick={() => onCancel?.()}
+          sx={{ textTransform: 'none' }}
+        >
+          Cancel
+        </Button>
+        {onDelete && (
+          <Button
+            variant="outlined"
+            color="error"
+            size="small"
+            disabled={busy || saving}
+            onClick={() => onDelete()}
+            sx={{ textTransform: 'none' }}
+          >
+            Delete
+          </Button>
+        )}
+      </Stack>
     </Stack>
   );
 }

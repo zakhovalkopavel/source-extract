@@ -44,6 +44,8 @@ type Props = {
   onRegisterDelete?: (fn: () => void) => void;
   /** Register Commit seed handler (Enter / ToolsRail button). */
   onRegisterCommitSeed?: (fn: () => void) => void;
+  /** Register Cancel seed handler (clears waypoints). */
+  onRegisterCancelSeed?: (fn: () => void) => void;
   /** Session undo (Ctrl+Z when not peeling a seed waypoint). */
   onUndo?: () => void | Promise<void>;
   /** Field / °C for Seed isotherm (from ToolsRail — no window.prompt). */
@@ -51,6 +53,8 @@ type Props = {
   seedTemperatureC?: string;
   /** Live waypoint count for the ToolsRail Commit button. */
   onSeedCount?: (n: number) => void;
+  /** After a successful seed commit — parent can switch tool / focus the new curve. */
+  onSeedCommitted?: (curve: { kind: 'boundary' | 'isotherm'; index: number }) => void;
 };
 
 function isAdditiveModifier(ev: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): boolean {
@@ -103,10 +107,12 @@ export function ReviewCanvas({
   focusFieldName = null,
   onRegisterDelete,
   onRegisterCommitSeed,
+  onRegisterCancelSeed,
   onUndo,
   seedField = '',
   seedTemperatureC = '1500',
   onSeedCount,
+  onSeedCommitted,
 }: Props) {
   const [selectedField, setSelectedField] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -332,9 +338,32 @@ export function ReviewCanvas({
     [mutate],
   );
 
+  const deleteWholeCurve = useCallback(
+    async (kind: 'boundary' | 'isotherm', index: number) => {
+      if (kind === 'boundary') {
+        await mutate('/boundaries/delete', { contourIndex: index });
+      } else {
+        await mutate('/isotherms/delete', { contourIndex: index });
+      }
+      setSelected(null);
+      setMulti([]);
+      onStatus(`Deleted ${kind} #${index}`);
+    },
+    [mutate, onStatus],
+  );
+
   const confirmDeleteSelection = useCallback(async () => {
     const hits = multiRef.current;
     const sel = selectedRef.current;
+    // Whole curve wins — handles often land in multi after a near-miss click.
+    if (
+      sel &&
+      (sel.kind === 'boundary' || sel.kind === 'isotherm') &&
+      sel.pointIndex == null
+    ) {
+      await deleteWholeCurve(sel.kind, sel.index);
+      return;
+    }
     // Prefer multi point selection (nodes / invariants / vertices)
     if (hits.length) {
       const n = hits.length;
@@ -348,20 +377,8 @@ export function ReviewCanvas({
       onStatus(`Deleted ${hitLabel(sel)}`);
       return;
     }
-    // Whole curve
-    if (sel && (sel.kind === 'boundary' || sel.kind === 'isotherm')) {
-      if (sel.kind === 'boundary') {
-        await mutate('/boundaries/delete', { contourIndex: sel.index });
-      } else {
-        await mutate('/isotherms/delete', { contourIndex: sel.index });
-      }
-      setSelected(null);
-      setMulti([]);
-      onStatus(`Deleted ${sel.kind} #${sel.index}`);
-      return;
-    }
     onStatus('Nothing selected to delete');
-  }, [deletePointRefs, mutate, onStatus]);
+  }, [deletePointRefs, deleteWholeCurve, onStatus]);
 
   const confirmDeleteSelectionRef = useRef(confirmDeleteSelection);
   confirmDeleteSelectionRef.current = confirmDeleteSelection;
@@ -393,12 +410,17 @@ export function ReviewCanvas({
     });
   }, [multi, selected, onSelectionChange]);
 
+  // Parent remaps curve index after Save/join — only follow when the prop changes,
+  // never rewrite a fresh canvas click back onto a stale external index.
   useEffect(() => {
-    if (externalCurveIndex == null || !selected) return;
-    if (selected.kind !== 'boundary' && selected.kind !== 'isotherm') return;
-    if (selected.index === externalCurveIndex) return;
-    setSelected({ kind: selected.kind, index: externalCurveIndex });
-  }, [externalCurveIndex, selected]);
+    if (externalCurveIndex == null) return;
+    setSelected((prev) => {
+      if (!prev) return prev;
+      if (prev.kind !== 'boundary' && prev.kind !== 'isotherm') return prev;
+      if (prev.index === externalCurveIndex) return prev;
+      return { kind: prev.kind, index: externalCurveIndex };
+    });
+  }, [externalCurveIndex]);
 
   useEffect(() => {
     if (!focusInvariantId) return;
@@ -450,11 +472,20 @@ export function ReviewCanvas({
   const seedRef = useRef(seed);
   seedRef.current = seed;
 
+  const cancelSeed = useCallback(() => {
+    setSeed([]);
+    onStatus('Seed cancelled');
+  }, [onStatus]);
+
   useEffect(() => {
     onRegisterCommitSeed?.(() => {
       void commitSeedRef.current().catch((e) => onStatusRef.current(formatApiError(e)));
     });
   }, [onRegisterCommitSeed]);
+
+  useEffect(() => {
+    onRegisterCancelSeed?.(() => cancelSeed());
+  }, [onRegisterCancelSeed, cancelSeed]);
 
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
@@ -467,6 +498,16 @@ export function ReviewCanvas({
       const tag = (ev.target as HTMLElement | null)?.tagName;
       const inField =
         tag === 'INPUT' || tag === 'TEXTAREA' || (ev.target as HTMLElement)?.isContentEditable;
+      if (
+        ev.key === 'Escape' &&
+        !inField &&
+        (toolRef.current === 'seed-boundary' || toolRef.current === 'seed-isotherm')
+      ) {
+        ev.preventDefault();
+        setSeed([]);
+        onStatusRef.current('Seed cancelled');
+        return;
+      }
       if (
         (ev.key === 'Enter' || ev.key === 'NumpadEnter') &&
         !inField &&
@@ -621,6 +662,39 @@ export function ReviewCanvas({
       }
       if (isDeletablePointHit(hit)) {
         fieldClickCandidate.current = null;
+        // Curve handles look like the stroke is selected; first click must grab the
+        // whole curve so Delete removes boundary #N, not one polyline sample.
+        const curveVertex =
+          hit &&
+          (hit.kind === 'boundary' || hit.kind === 'isotherm') &&
+          hit.pointIndex != null
+            ? hit
+            : null;
+        if (curveVertex && !additive) {
+          const wholeSelected =
+            selected?.kind === curveVertex.kind &&
+            selected.index === curveVertex.index &&
+            selected.pointIndex == null;
+          if (tool === 'delete' && wholeSelected) {
+            void deleteWholeCurve(curveVertex.kind, curveVertex.index).catch((e) =>
+              onStatus(String(e)),
+            );
+            return;
+          }
+          if (!wholeSelected) {
+            const curveHit = { kind: curveVertex.kind, index: curveVertex.index } as Hit;
+            setSelected(curveHit);
+            setMulti([]);
+            setSelectedField(null);
+            onStatus(
+              tool === 'delete'
+                ? `Selected ${hitLabel(curveHit)} — Delete or click again to remove curve`
+                : `Selected ${hitLabel(curveHit)} — click a handle to edit vertices`,
+            );
+            return;
+          }
+          // Select tool + curve already selected → fall through to vertex pick.
+        }
         // C# compound rings → promote into draft invariants so they edit like I#.
         if (
           hit?.kind === 'node' &&
@@ -686,31 +760,24 @@ export function ReviewCanvas({
         const already =
           selected?.kind === hit.kind &&
           selected.index === hit.index &&
-          hit.pointIndex == null;
-        if (tool === 'delete' && already && hit.pointIndex == null) {
-          void (async () => {
-            try {
-              if (hit.kind === 'boundary') {
-                await mutate('/boundaries/delete', { contourIndex: hit.index });
-              } else if (hit.kind === 'isotherm') {
-                await mutate('/isotherms/delete', { contourIndex: hit.index });
-              }
-              setSelected(null);
-              setMulti([]);
-              onStatus(`Deleted ${hit.kind} #${hit.index}`);
-            } catch (e) {
-              onStatus(String(e));
-            }
-          })();
+          selected.pointIndex == null;
+        if (
+          tool === 'delete' &&
+          already &&
+          (hit.kind === 'boundary' || hit.kind === 'isotherm')
+        ) {
+          void deleteWholeCurve(hit.kind, hit.index).catch((e) => onStatus(String(e)));
           return;
         }
-        setSelected(hit);
+        const curveHit =
+          hit.pointIndex == null ? hit : ({ kind: hit.kind, index: hit.index } as Hit);
+        setSelected(curveHit);
         setSelectedField(null);
         if (!additive) setMulti([]);
         onStatus(
           tool === 'delete'
-            ? `Selected ${hitLabel(hit)} — click again to delete curve`
-            : `Selected ${hitLabel(hit)} — drag a handle to move`,
+            ? `Selected ${hitLabel(curveHit)} — Delete or click again to remove curve`
+            : `Selected ${hitLabel(curveHit)} — click a handle to edit vertices`,
         );
         return;
       }
@@ -863,28 +930,30 @@ export function ReviewCanvas({
       return;
     }
     if (tool === 'add-invariant') {
-      const id = invariantDraftId.trim();
-      if (!id) {
-        onStatus('Enter invariant id / notation (e.g. A3S2) in the Tools panel first');
-        return;
-      }
+      // Place first — type / name / °C are set in the right panel after click.
+      const draftId = invariantDraftId.trim();
       void mutate('/invariants', {
-        pointId: id,
+        ...(draftId ? { pointId: draftId } : {}),
         pixel: { x: imgPt[0], y: imgPt[1] },
       })
         .then((next) => {
+          const look = next.lastInvariantLookup;
+          const id = String(look?.id || draftId || '');
+          if (!id) {
+            onStatus('Placed point but no id returned');
+            return;
+          }
           setSelected({ kind: 'invariant', id });
           setMulti([{ kind: 'invariant', id }]);
-          const look = next.lastInvariantLookup;
-          if (look?.resolved && look.temperature_C != null) {
-            onStatus(
-              `Placed ${id} → ${look.compoundId || look.notation} @ ${look.temperature_C}°C`,
-            );
-          } else if (look?.resolved) {
-            onStatus(`Placed ${id} → ${look.compoundId || 'compound'} (no melting °C in compounds.json)`);
-          } else {
-            onStatus(`Placed ${id} (no compounds.json match — set °C manually if needed)`);
-          }
+          setSelectedField(null);
+          onSelectionChange?.({
+            pointCount: 1,
+            curve: null,
+            canDelete: true,
+            invariantId: id,
+            fieldName: null,
+          });
+          onStatus(`Placed point — choose type, name, °C and Save`);
         })
         .catch((e) => onStatus(String(e)));
       return;
@@ -1046,22 +1115,26 @@ export function ReviewCanvas({
     }
     try {
       if (mode === 'seed-boundary') {
-        await mutate('/boundaries', {
+        const next = await mutate('/boundaries', {
           waypoints: waypoints.map(([x, y]) => ({ x, y })),
         });
         setSeed([]);
-        // Commit = finished — deselect so the next seed can start immediately.
-        setSelected(null);
+        const idx =
+          next.lastBoundaryBuild?.index ??
+          Math.max(0, (next.view?.boundaries?.length || 1) - 1);
+        const curve = { kind: 'boundary' as const, index: idx };
+        setSelected(curve);
         setMulti([]);
         setSelectedField(null);
         onSelectionChange?.({
           pointCount: 0,
-          curve: null,
-          canDelete: false,
+          curve,
+          canDelete: true,
           invariantId: null,
           fieldName: null,
         });
-        onStatus(`Seeded boundary (${waypoints.length} waypoints) — Undo available`);
+        onSeedCommitted?.(curve);
+        onStatus(`Seeded boundary #${idx} — set fields and Save`);
         return;
       }
       const field =
@@ -1070,11 +1143,11 @@ export function ReviewCanvas({
         '';
       const t = Number(seedTempRef.current);
       if (!Number.isFinite(t)) {
-        onStatus('Set a valid Temperature °C in the Tools panel before committing');
+        onStatus('Set a valid Temperature °C before committing');
         return;
       }
       if (!field) {
-        onStatus('Set Field name in the Tools panel before committing');
+        onStatus('Set Field name before committing');
         return;
       }
       const next = await mutate('/isotherms', {
@@ -1084,28 +1157,29 @@ export function ReviewCanvas({
       });
       setSeed([]);
       const build = next.lastIsothermBuild;
-      const idx = build?.index;
+      const idx = build?.index ?? Math.max(0, (next.view?.isotherms?.length || 1) - 1);
       const removed = build?.removedCount || 0;
-      setSelected(null);
+      const curve = { kind: 'isotherm' as const, index: idx };
+      setSelected(curve);
       setMulti([]);
       setSelectedField(null);
       onSelectionChange?.({
         pointCount: 0,
-        curve: null,
-        canDelete: false,
+        curve,
+        canDelete: true,
         invariantId: null,
         fieldName: null,
       });
+      onSeedCommitted?.(curve);
       onStatus(
-        `Saved isotherm ${field} @ ${t}°C` +
-          (idx != null ? ` (#${idx})` : '') +
+        `Seeded isotherm ${field} @ ${t}°C (#${idx})` +
           (removed > 0 ? ` — removed ${removed} crossed` : '') +
-          ' — click it later to edit',
+          ' — edit and Save',
       );
     } catch (e) {
       onStatus(`Seed failed: ${formatApiError(e)}`);
     }
-  }, [seed, mutate, onStatus, onSelectionChange]);
+  }, [seed, mutate, onStatus, onSelectionChange, onSeedCommitted]);
 
   commitSeedRef.current = commitSeed;
 

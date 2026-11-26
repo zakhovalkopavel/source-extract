@@ -1,4 +1,11 @@
-import { Button, Stack, TextField, Typography } from '@mui/material';
+import {
+  Button,
+  Stack,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from '@mui/material';
 import { useEffect, useState } from 'react';
 import { seClient } from '../../shared/api/se-client';
 import { viewInvariants } from './canvas/viewInvariants';
@@ -11,6 +18,7 @@ type Props = {
   onSession: (s: ReviewSession) => void;
   onStatus: (msg: string) => void;
   onInvariantId?: (id: string) => void;
+  onCancel?: () => void;
 };
 
 function formatComp(comp?: Record<string, number | null | undefined>): string {
@@ -21,6 +29,10 @@ function formatComp(comp?: Record<string, number | null | undefined>): string {
     .join(' · ');
 }
 
+function isProvisionalId(id: string): boolean {
+  return /^pt-\d+$/i.test(id);
+}
+
 export function InvariantEditPanel({
   session,
   invariantId,
@@ -28,7 +40,9 @@ export function InvariantEditPanel({
   onSession,
   onStatus,
   onInvariantId,
+  onCancel,
 }: Props) {
+  const [pointType, setPointType] = useState<'invariant' | 'compound'>('invariant');
   const [id, setId] = useState('');
   const [temp, setTemp] = useState('');
   const [phases, setPhases] = useState('');
@@ -39,21 +53,27 @@ export function InvariantEditPanel({
 
   useEffect(() => {
     if (!invariantId || !inv) {
-      setId(invariantId || '');
+      setId(invariantId && !isProvisionalId(invariantId) ? invariantId : '');
       setTemp('');
       setPhases('');
       setReaction('');
+      setPointType('invariant');
       return;
     }
-    setId(inv.id || '');
+    setPointType(inv.pointRole === 'compound' ? 'compound' : 'invariant');
+    setId(isProvisionalId(inv.id) ? '' : inv.id || '');
     setTemp(
       inv.temperature_C != null && Number.isFinite(Number(inv.temperature_C))
         ? String(inv.temperature_C)
         : '',
     );
     setPhases((inv.phases || []).join(', '));
-    setReaction(String(inv.reaction || ''));
-  }, [invariantId, inv?.id, inv?.temperature_C, inv?.reaction, session.id, session.view]);
+    setReaction(
+      inv.reaction && inv.reaction !== 'unknown' && inv.reaction !== 'compound'
+        ? String(inv.reaction)
+        : '',
+    );
+  }, [invariantId, inv?.id, inv?.temperature_C, inv?.reaction, inv?.pointRole, session.id, session.view]);
 
   if (!invariantId) return null;
 
@@ -61,13 +81,13 @@ export function InvariantEditPanel({
     if (!invariantId) return;
     const newId = id.trim();
     if (!newId) {
-      onStatus('Invariant id cannot be empty');
+      onStatus('Enter a name before Save');
       return;
     }
     const tempRaw = temp.trim();
     const temperature_C = tempRaw === '' ? null : Number(tempRaw);
     if (tempRaw !== '' && !Number.isFinite(temperature_C)) {
-      onStatus('Invariant °C must be a number (or leave blank)');
+      onStatus('Temperature °C must be a number (or leave blank)');
       return;
     }
     const phaseList = phases
@@ -80,6 +100,7 @@ export function InvariantEditPanel({
         temperature_C,
         phases: phaseList,
         reaction: reaction.trim() || null,
+        pointRole: pointType,
       };
       if (newId !== invariantId) body.newId = newId;
       const res = await seClient.post(
@@ -89,10 +110,8 @@ export function InvariantEditPanel({
       const next = res.data as ReviewSession;
       onSession(next);
       onInvariantId?.(newId);
-      const saved = viewInvariants(next.view).find((p) => p.id === newId);
-      const savedRole = saved?.pointRole === 'compound' ? 'compound' : 'invariant';
       onStatus(
-        `Saved ${savedRole} ${newId}` +
+        `Saved ${pointType === 'compound' ? 'compound' : 'invariant'} ${newId}` +
           (temperature_C != null ? ` @ ${temperature_C}°C` : ''),
       );
     } catch (e: unknown) {
@@ -108,28 +127,66 @@ export function InvariantEditPanel({
     }
   }
 
-  const role = inv?.pointRole === 'compound' ? 'compound' : 'invariant';
+  async function removePoint() {
+    if (!invariantId) return;
+    setSaving(true);
+    try {
+      const res = await seClient.delete(
+        `/review/sessions/${session.id}/invariants/${encodeURIComponent(invariantId)}`,
+      );
+      onSession(res.data as ReviewSession);
+      onStatus(`Deleted ${invariantId}`);
+      onCancel?.();
+    } catch (e: unknown) {
+      onStatus(`Delete failed: ${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function cancel() {
+    if (!invariantId) {
+      onCancel?.();
+      return;
+    }
+    // Discard a just-placed provisional point.
+    if (isProvisionalId(invariantId) || (inv && isProvisionalId(String(inv.id)))) {
+      await removePoint();
+      return;
+    }
+    onCancel?.();
+  }
 
   return (
     <Stack spacing={1} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1 }}>
-      <Typography variant="subtitle2">
-        {role === 'compound' ? 'Compound point' : 'Invariant point'}
-      </Typography>
-      <Typography variant="caption" color="text.secondary">
-        {role === 'compound'
-          ? 'Named formula / compound (e.g. A3S2). Same edit tools as invariants.'
-          : 'Composition + melting °C (eutectic / peritectic / …). Add a special name to mark as compound.'}
-      </Typography>
+      <Typography variant="subtitle2">Edit point</Typography>
       {!inv && (
         <Typography variant="caption" color="warning.main">
           Point not in view — try selecting again
         </Typography>
       )}
+      <ToggleButtonGroup
+        exclusive
+        size="small"
+        fullWidth
+        value={pointType}
+        onChange={(_, v) => v && setPointType(v)}
+      >
+        <ToggleButton value="invariant" sx={{ textTransform: 'none' }}>
+          Invariant
+        </ToggleButton>
+        <ToggleButton value="compound" sx={{ textTransform: 'none' }}>
+          Compound
+        </ToggleButton>
+      </ToggleButtonGroup>
+
       <TextField
         size="small"
-        label={role === 'compound' ? 'Compound name / notation' : 'Id / notation'}
+        label="Name"
         value={id}
         onChange={(e) => setId(e.target.value)}
+        placeholder={pointType === 'compound' ? 'e.g. A3S2, mullite' : 'e.g. cas-1170'}
+        helperText="Label of this marker on the diagram (not the phase list)."
         onKeyDown={(e) => {
           if (e.key === 'Enter') void save();
         }}
@@ -141,7 +198,7 @@ export function InvariantEditPanel({
         type="number"
         value={temp}
         onChange={(e) => setTemp(e.target.value)}
-        placeholder="blank = clear"
+        placeholder="blank = none"
         onKeyDown={(e) => {
           if (e.key === 'Enter') void save();
         }}
@@ -149,11 +206,11 @@ export function InvariantEditPanel({
       />
       <TextField
         size="small"
-        label="Phases"
+        label="Phases in equilibrium"
         value={phases}
         onChange={(e) => setPhases(e.target.value)}
         placeholder="silica, anorthite, …"
-        helperText="Comma-separated"
+        helperText="Solids that meet at this point (optional). Different from Name."
         onKeyDown={(e) => {
           if (e.key === 'Enter') void save();
         }}
@@ -161,10 +218,11 @@ export function InvariantEditPanel({
       />
       <TextField
         size="small"
-        label="Reaction"
+        label="Reaction type"
         value={reaction}
         onChange={(e) => setReaction(e.target.value)}
-        placeholder="eutectic | peritectic | …"
+        placeholder="eutectic, peritectic, …"
+        helperText="Optional invariant reaction kind (not the point name)."
         onKeyDown={(e) => {
           if (e.key === 'Enter') void save();
         }}
@@ -175,19 +233,37 @@ export function InvariantEditPanel({
           Composition: {formatComp(inv.composition) || '—'}
         </Typography>
       )}
-      {inv?.provenance && (
-        <Typography variant="caption" color="text.secondary">
-          Provenance: {inv.provenance}
-        </Typography>
-      )}
-      <Button
-        variant="contained"
-        size="small"
-        disabled={busy || saving}
-        onClick={() => void save()}
-      >
-        Save point
-      </Button>
+
+      <Stack direction="row" spacing={1} sx={{ pt: 0.5 }}>
+        <Button
+          variant="contained"
+          size="small"
+          disabled={busy || saving}
+          onClick={() => void save()}
+          sx={{ textTransform: 'none' }}
+        >
+          Save
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          disabled={busy || saving}
+          onClick={() => void cancel()}
+          sx={{ textTransform: 'none' }}
+        >
+          Cancel
+        </Button>
+        <Button
+          variant="outlined"
+          color="error"
+          size="small"
+          disabled={busy || saving}
+          onClick={() => void removePoint()}
+          sx={{ textTransform: 'none' }}
+        >
+          Delete
+        </Button>
+      </Stack>
     </Stack>
   );
 }

@@ -1,55 +1,121 @@
-import { AppBar, Box, Button, Container, Toolbar, Typography } from '@mui/material';
-import { NavLink, Route, Routes } from 'react-router-dom';
+import {
+  AppBar,
+  Box,
+  Button,
+  Container,
+  Menu,
+  MenuItem,
+  Toolbar,
+  Typography,
+} from '@mui/material';
+import { useState } from 'react';
+import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { AdaptersPage } from '../pages/AdaptersPage';
 import { CommandsPage } from '../pages/CommandsPage';
 import { HistoryPage } from '../pages/HistoryPage';
-import { HomePage } from '../pages/HomePage';
 import { JobsPage } from '../pages/JobsPage';
 import { ModelsPage } from '../pages/ModelsPage';
 import { OcrPage } from '../pages/OcrPage';
 import { ReviewPage } from '../pages/ReviewPage';
 
-const NAV = [
-  { to: '/', label: 'Home', end: true },
-  { to: '/adapters', label: 'Adapters' },
+const PRIMARY_NAV = [
+  { to: '/adapters', label: 'Sources' },
+  { to: '/review', label: 'Diagrams' },
+] as const;
+
+const ADVANCED_NAV = [
   { to: '/commands', label: 'Commands' },
   { to: '/jobs', label: 'Jobs' },
-  { to: '/review', label: 'Review' },
   { to: '/ocr', label: 'OCR' },
   { to: '/history', label: 'History' },
   { to: '/models', label: 'Models' },
 ] as const;
 
 export function App() {
+  const [advancedAnchor, setAdvancedAnchor] = useState<null | HTMLElement>(null);
+  const [showAdvanced, setShowAdvanced] = useState(
+    () => localStorage.getItem('se-advanced') === '1',
+  );
+
   return (
     <Box sx={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <AppBar position="sticky" color="primary">
-        <Toolbar>
-          <Typography variant="h6" sx={{ mr: 3, fontWeight: 700 }}>
+      <AppBar position="sticky" color="primary" elevation={0}>
+        <Toolbar variant="dense" sx={{ gap: 0.5 }}>
+          <Typography variant="h6" sx={{ mr: 2, fontWeight: 700, letterSpacing: 0.2 }}>
             Source Extractor
           </Typography>
-          {NAV.map((item) => (
+          {PRIMARY_NAV.map((item) => (
             <Button
               key={item.to}
               component={NavLink}
               to={item.to}
-              end={item.end}
               color="inherit"
-              sx={{ '&.active': { bgcolor: 'rgba(255,255,255,0.16)' } }}
+              sx={{ '&.active': { bgcolor: 'rgba(255,255,255,0.16)' }, textTransform: 'none' }}
             >
               {item.label}
             </Button>
           ))}
+          <Box sx={{ flex: 1 }} />
+          {showAdvanced ? (
+            <>
+              <Button
+                color="inherit"
+                size="small"
+                sx={{ textTransform: 'none', opacity: 0.85 }}
+                onClick={(e) => setAdvancedAnchor(e.currentTarget)}
+              >
+                Advanced
+              </Button>
+              <Menu
+                anchorEl={advancedAnchor}
+                open={Boolean(advancedAnchor)}
+                onClose={() => setAdvancedAnchor(null)}
+              >
+                {ADVANCED_NAV.map((item) => (
+                  <MenuItem
+                    key={item.to}
+                    component={NavLink}
+                    to={item.to}
+                    onClick={() => setAdvancedAnchor(null)}
+                  >
+                    {item.label}
+                  </MenuItem>
+                ))}
+                <MenuItem
+                  onClick={() => {
+                    localStorage.removeItem('se-advanced');
+                    setShowAdvanced(false);
+                    setAdvancedAnchor(null);
+                  }}
+                >
+                  Hide advanced
+                </MenuItem>
+              </Menu>
+            </>
+          ) : (
+            <Button
+              color="inherit"
+              size="small"
+              sx={{ textTransform: 'none', opacity: 0.55 }}
+              onClick={() => {
+                localStorage.setItem('se-advanced', '1');
+                setShowAdvanced(true);
+              }}
+              title="Commands, Jobs, OCR, History, Models"
+            >
+              …
+            </Button>
+          )}
         </Toolbar>
       </AppBar>
-      <Container maxWidth="xl" sx={{ py: 3, flex: 1 }}>
+      <Container maxWidth={false} sx={{ py: 2, px: { xs: 1.5, md: 2 }, flex: 1 }}>
         <Routes>
-          <Route path="/" element={<HomePage />} />
+          <Route path="/" element={<Navigate to="/review" replace />} />
           <Route path="/adapters" element={<AdaptersPage />} />
+          <Route path="/review" element={<ReviewPage />} />
           <Route path="/commands" element={<CommandsPage />} />
           <Route path="/jobs" element={<JobsPage />} />
           <Route path="/jobs/:jobId" element={<JobsPage />} />
-          <Route path="/review" element={<ReviewPage />} />
           <Route path="/ocr" element={<OcrPage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/models" element={<ModelsPage />} />
