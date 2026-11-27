@@ -1,3 +1,4 @@
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import {
   AppBar,
   Box,
@@ -17,6 +18,9 @@ import { JobsPage } from '../pages/JobsPage';
 import { ModelsPage } from '../pages/ModelsPage';
 import { OcrPage } from '../pages/OcrPage';
 import { ReviewPage } from '../pages/ReviewPage';
+
+/** Main Thermal Software UI (same origin via nginx, or absolute URL from env). */
+const MAIN_APP_URL = import.meta.env.VITE_MAIN_APP_URL ?? '/';
 
 const PRIMARY_NAV = [
   { to: '/adapters', label: 'Sources' },
@@ -41,6 +45,14 @@ export function App() {
     <Box sx={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <AppBar position="sticky" color="primary" elevation={0}>
         <Toolbar variant="dense" sx={{ gap: 0.5 }}>
+          <Button
+            color="inherit"
+            href={MAIN_APP_URL}
+            startIcon={<ArrowBackIcon />}
+            sx={{ textTransform: 'none', mr: 1 }}
+          >
+            Thermal Software
+          </Button>
           <Typography variant="h6" sx={{ mr: 2, fontWeight: 700, letterSpacing: 0.2 }}>
             Source Extractor
           </Typography>
